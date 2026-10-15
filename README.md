@@ -4,8 +4,8 @@
   <p><strong>Spend your edit on the story—not the setup.</strong></p>
   <p>A local-first workflow console for DaVinci Resolve: prep camera media, shape timelines, install titles, and run repetitive edit tasks with review and job history.</p>
   <p>
-    <a href="https://github.com/zabid-coder/clip-assassin-v2/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/zabid-coder/clip-assassin-v2?display_name=tag&style=for-the-badge&color=8b6cff"></a>
-    <a href="https://github.com/zabid-coder/clip-assassin-v2/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/zabid-coder/clip-assassin-v2?style=for-the-badge&color=36c99a"></a>
+    <a href="https://github.com/zabid-coder/clip-assassin-resolve/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/zabid-coder/clip-assassin-resolve?display_name=tag&style=for-the-badge&color=8b6cff"></a>
+    <a href="https://github.com/zabid-coder/clip-assassin-resolve/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/zabid-coder/clip-assassin-resolve?style=for-the-badge&color=36c99a"></a>
     <img alt="Platform" src="https://img.shields.io/badge/macOS-tested-111827?style=for-the-badge">
     <img alt="DaVinci Resolve" src="https://img.shields.io/badge/DaVinci_Resolve-21.1-111827?style=for-the-badge">
   </p>
@@ -98,8 +98,8 @@ The Text Animation Light source archive is about 160 MB, so GitHub stores it wit
 ```bash
 brew install git-lfs
 git lfs install
-git clone https://github.com/zabid-coder/clip-assassin-v2.git
-cd clip-assassin-v2
+git clone https://github.com/zabid-coder/clip-assassin-resolve.git
+cd clip-assassin-resolve
 ./install.sh
 ./Run_Clip_Assassin.command
 ```
