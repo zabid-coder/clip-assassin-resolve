@@ -30,9 +30,9 @@ export function MagicToolsPage({ API_BASE, isDashboard, favorites, toggleFavorit
         title="Timeline Snapshot"
         icon={<Camera size={18} />}
         category="magic"
-        helpText="Creates an instant backup copy of your current timeline before making any destructive changes. One-click undo insurance."
+        helpText="Creates a backup copy of the active timeline. Keep this copy before editing; switch back to it when you need the original sequence."
       >
-        <div className="w-full md:w-1/3 mt-2">
+        <div className="tool-action-slot">
           <ActionButton
             text="Save Snapshot"
             category="magic" variant="primary"
@@ -55,7 +55,7 @@ export function MagicToolsPage({ API_BASE, isDashboard, favorites, toggleFavorit
         category="organize"
         helpText="Scans the root Media Pool and automatically moves loose Video, Audio, and Image files into standard organized Bins."
       >
-        <div className="w-full md:w-1/3 mt-2">
+        <div className="tool-action-slot">
           <ActionButton
             text="Organize Media Pool"
             category="organize" variant="primary"
@@ -69,7 +69,7 @@ export function MagicToolsPage({ API_BASE, isDashboard, favorites, toggleFavorit
         id="batch_clip_renamer"
         isFavorite={favorites.includes('batch_clip_renamer')}
         onToggleFavorite={() => toggleFavorite('batch_clip_renamer')}
-        description="Renames every clip on Video Track 1 in sequence using your prefix."
+        description="Renames timeline clip instances on Video Track 1 using your prefix."
         warning="This modifies your timeline directly. Use Timeline Snapshot first if unsure."
         title="Batch Clip Renamer"
         icon={<PenLine size={18} />}
@@ -81,7 +81,7 @@ export function MagicToolsPage({ API_BASE, isDashboard, favorites, toggleFavorit
           <ActionButton
             text="Rename All Clips"
             isLoading={loading['rename']}
-            category="destructive" variant="primary" requiresConfirm
+            category="destructive" variant="primary"
             onClick={() => runTask('batch_rename', {
               prefix: (document.getElementById('renamePrefix') as HTMLInputElement).value,
               start_number: 1,
@@ -178,7 +178,7 @@ export function MagicToolsPage({ API_BASE, isDashboard, favorites, toggleFavorit
         isFavorite={favorites.includes('badwords')}
         onToggleFavorite={() => toggleFavorite('badwords')}
         description="Scans your timeline markers for flagged words and lists them for review."
-        warning="This modifies your timeline directly. Use Timeline Snapshot first if unsure."
+        warning="Creates a new timeline and preserves the source."
         className="md:col-span-2 ring-1 ring-brand-primary/30 shadow-xl shadow-brand-primary/20"
         title="BadWords Cleaner"
         icon={<Wand2 size={18} />}
@@ -187,7 +187,7 @@ export function MagicToolsPage({ API_BASE, isDashboard, favorites, toggleFavorit
       >
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-full md:w-1/3">
+            <div className="tool-action-slot">
               <ActionButton
                 text="Scan Markers"
                 category="destructive" variant="secondary"
@@ -251,10 +251,10 @@ export function MagicToolsPage({ API_BASE, isDashboard, favorites, toggleFavorit
                 ))}
               </div>
 
-              <div className="w-full md:w-1/3">
+              <div className="tool-action-slot">
                 <ActionButton
                   text="Clean Timeline"
-                  category="destructive" variant="primary" requiresConfirm
+                  category="destructive" variant="primary"
                   isLoading={loading['bw_clean']}
                   onClick={() => {
                     const selectedColors = Object.entries(bwColors)
@@ -264,7 +264,7 @@ export function MagicToolsPage({ API_BASE, isDashboard, favorites, toggleFavorit
                       addLog('No colors selected for removal', 'error')
                       return
                     }
-                    runTask('badwords/clean', { colors: selectedColors }, 'bw_clean')
+                    return runTask('badwords/clean', { colors: selectedColors }, 'bw_clean')
                   }}
                 />
               </div>

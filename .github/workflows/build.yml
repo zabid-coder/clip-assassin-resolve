@@ -1,156 +1,215 @@
-name: Build & Release
+name: Verify and release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          if (Test-Path requirements.txt) { pip install -r requirements.txt }
-      
-      - name: Build Frontend (if exists)
-        run: |
-          if (Test-Path "frontend/package.json") {
-            cd frontend
-            npm install
-            npm run build
-            cd ..
-          }
-
-      - name: Build Executable with PyInstaller
-        run: |
-          # চেষ্টা করুন আইকন সহ বিল্ড করতে, ব্যর্থ হলে ছাড়া বিল্ড করুন
-          $iconPath = "assets/icon.ico"
-          if (Test-Path $iconPath) {
-            pyinstaller --onefile --windowed --name="ClipAssassin" --icon=$iconPath desktop_app.py
-          } else {
-            pyinstaller --onefile --windowed --name="ClipAssassin" desktop_app.py
-          }
-
-      - name: Prepare Release
-        run: |
-          New-Item -ItemType Directory -Force -Path release
-          Copy-Item dist/ClipAssassin.exe release/
-          if (Test-Path README.md) { Copy-Item README.md release/ }
-          Compress-Archive -Path release/* -DestinationPath ClipAssassin-Windows.zip
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-build
-          path: ClipAssassin-Windows.zip
-
-  build-macos:
-    runs-on: macos-latest  # আপডেট করা হয়েছে: macos-latest ব্যবহার করছে
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
-      - name: Build Frontend (if exists)
-        run: |
-          if [ -f "frontend/package.json" ]; then
-            cd frontend
-            npm install
-            npm run build
-            cd ..
-          fi
-
-      - name: Build App Bundle with PyInstaller
-        run: |
-          # চেষ্টা করুন আইকন সহ বিল্ড করতে, ব্যর্থ হলে ছাড়া বিল্ড করুন
-          if [ -f "assets/icon.icns" ]; then
-            pyinstaller --windowed --name="ClipAssassin" --icon=assets/icon.icns desktop_app.py
-          else
-            pyinstaller --windowed --name="ClipAssassin" desktop_app.py
-          fi
-
-      - name: Prepare Release
-        run: |
-          mkdir -p release
-          cp -r dist/ClipAssassin.app release/
-          if [ -f README.md ]; then cp README.md release/; fi
-          cd release
-          zip -r ../ClipAssassin-macOS.zip .
-          cd ..
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-build
-          path: ClipAssassin-macOS.zip
-
-  create-release:
-    needs: [build-windows, build-macos]
+  verify:
+    name: Verify source and frontend
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Check out source and bundled assets
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
-      - name: Download Windows Build
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run backend tests
+        run: python -m pytest -q tests
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build and lint frontend
+        working-directory: frontend
+        run: |
+          npm run build
+          npm run lint
+
+  build-windows:
+    name: Package Windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - name: Check out source and bundled assets
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install build dependencies and build frontend
+        run: |
+          python -m pip install -r requirements.txt
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Package application
+        shell: pwsh
+        run: >-
+          python -m PyInstaller --noconfirm --clean --windowed
+          --name "Clip Assassin"
+          --icon icon.ico
+          --add-data "frontend/dist;frontend/dist"
+          --add-data "presets;presets"
+          --add-data "templates;templates"
+          --collect-all webview
+          --collect-all keyring
+          --collect-all uvicorn
+          --collect-all fastapi
+          --hidden-import modules.master_ingest
+          --hidden-import modules.audio_tools
+          --hidden-import modules.export_tools
+          --hidden-import modules.magic_tools
+          --hidden-import modules.timeline_tools
+          --hidden-import modules.utility_tools
+          --hidden-import modules.badwords_tools
+          --hidden-import resolve_core
+          --hidden-import db
+          --hidden-import config
+          --hidden-import logger
+          --hidden-import exceptions
+          --hidden-import task_queue
+          --hidden-import ai_integration
+          --hidden-import plugin_system
+          desktop_app.py
+
+      - name: Create Windows archive
+        shell: pwsh
+        run: Compress-Archive -Path 'dist/Clip Assassin/*','README.md','CHANGELOG.md' -DestinationPath 'Clip-Assassin-Windows.zip'
+
+      - name: Upload Windows archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: Clip-Assassin-Windows.zip
+
+  build-macos:
+    name: Package macOS
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: macos-latest
+    steps:
+      - name: Check out source and bundled assets
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install build dependencies and build frontend
+        run: |
+          python -m pip install -r requirements.txt
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Package application
+        run: >-
+          python -m PyInstaller --noconfirm --clean --windowed
+          --name "Clip Assassin"
+          --icon app_icon.icns
+          --add-data "frontend/dist:frontend/dist"
+          --add-data "presets:presets"
+          --add-data "templates:templates"
+          --collect-all webview
+          --collect-all keyring
+          --collect-all uvicorn
+          --collect-all fastapi
+          --hidden-import modules.master_ingest
+          --hidden-import modules.audio_tools
+          --hidden-import modules.export_tools
+          --hidden-import modules.magic_tools
+          --hidden-import modules.timeline_tools
+          --hidden-import modules.utility_tools
+          --hidden-import modules.badwords_tools
+          --hidden-import resolve_core
+          --hidden-import db
+          --hidden-import config
+          --hidden-import logger
+          --hidden-import exceptions
+          --hidden-import task_queue
+          --hidden-import ai_integration
+          --hidden-import plugin_system
+          desktop_app.py
+
+      - name: Create macOS archive
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/Clip Assassin.app" "Clip-Assassin-macOS.zip"
+
+      - name: Upload macOS archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: Clip-Assassin-macOS.zip
+
+  publish-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows archive
         uses: actions/download-artifact@v4
         with:
-          name: windows-build
-          path: ./artifacts/windows
+          name: windows-release
 
-      - name: Download macOS Build
+      - name: Download macOS archive
         uses: actions/download-artifact@v4
         with:
-          name: macos-build
-          path: ./artifacts/macos
+          name: macos-release
 
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Publish release with platform builds
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
+          name: Clip Assassin ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
-            ./artifacts/windows/ClipAssassin-Windows.zip
-            ./artifacts/macos/ClipAssassin-macOS.zip
-          body: |
-            ## Clip Assassin ${{ github.ref_name }}
-            
-            ### 📥 Downloads
-            - **Windows**: [Download ZIP](./ClipAssassin-Windows.zip)
-            - **macOS**: [Download ZIP](./ClipAssassin-macOS.zip)
-            
-            ### 🚀 Installation
-            #### Windows
-            1. ডাউনলোড করা `ClipAssassin-Windows.zip` ফাইলটি আনজিপ করুন।
-            2. `ClipAssassin.exe` ফাইলটি রান করুন।
-            
-            #### macOS
-            1. ডাউনলোড করা `ClipAssassin-macOS.zip` ফাইলটি আনজিপ করুন।
-            2. `ClipAssassin.app` ফাইলটি Applications ফোল্ডারে নিন।
-            3. প্রথমবার রান করার সময় Right-click করে Open করুন।
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            Clip-Assassin-Windows.zip
+            Clip-Assassin-macOS.zip

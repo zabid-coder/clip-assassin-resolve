@@ -1,0 +1,481 @@
+--[[--
+Neo Glitch Fuse
+GPU-accelerated digital glitch effect for DaVinci Resolve / Fusion
+RGB split, block displacement, scanline jitter, bit crush, scanlines
+--]]--
+
+FuRegisterClass("Neo_Glitch", CT_Tool, {
+    REGS_Name = "Neo Glitch",
+    REGS_Category = "Fuses\\Effect",
+    REGS_OpIconString = "NGl",
+    REGS_OpDescription = "GPU-accelerated digital glitch effect",
+    REGS_IconID = "Icons.Tools.Icons.Trails",
+    REG_TimeVariant = true,
+    REG_NoObjMatCtrls = true,
+})
+
+NeoGlitchParams = [[
+    int imgSize[2];
+    float amount;
+    float blockSize;
+    float blockOffset;
+    float scanJitter;
+    float seed;
+    float speed;
+    float trigger;
+    float splitAmount;
+    float splitAngle;
+    int splitIterations;
+    float bitCrush;
+    float scanlineOpacity;
+    float scanlineWidth;
+    float blend;
+]]
+
+NeoGlitchSource = [[
+
+// ---- Hash functions ----
+__DEVICE__ float hash11(float p, float seed)
+{
+    float h = _sinf(p * 127.1f + seed * 311.7f) * 43758.5453f;
+    return h - _floor(h);
+}
+
+__DEVICE__ float hash21(float px, float py, float seed)
+{
+    float h = _sinf(px * 127.1f + py * 311.7f + seed * 547.3f) * 43758.5453f;
+    return h - _floor(h);
+}
+
+// ---- Main kernel ----
+__KERNEL__ void NeoGlitchKernel(
+    __CONSTANTREF__ NeoGlitchParams *params,
+    __TEXTURE2D__ inimg,
+    __TEXTURE2D_WRITE__ outimg)
+{
+    DEFINE_KERNEL_ITERATORS_XY(x, y);
+    if (x < params->imgSize[0] && y < params->imgSize[1])
+    {
+        float width  = (float)params->imgSize[0];
+        float height = (float)params->imgSize[1];
+        float u = ((float)x + 0.5f) / width;
+        float v = ((float)y + 0.5f) / height;
+
+        float amount       = params->amount;
+        float blockSize    = params->blockSize;
+        float blockOffset  = params->blockOffset;
+        float scanJitter   = params->scanJitter;
+        float seed         = params->seed;
+        float trigger      = params->trigger;
+        float splitAmount  = params->splitAmount;
+        float splitAngle   = params->splitAngle;
+        float bitCrush     = params->bitCrush;
+        float scanOpacity  = params->scanlineOpacity;
+        float scanWidth    = params->scanlineWidth;
+        float blend        = params->blend;
+
+        // ---- Trigger: determine if this frame is glitching ----
+        float frameHash = hash11(seed * 0.1f, 0.0f);
+        float glitchActive = (frameHash < trigger) ? 1.0f : 0.0f;
+
+        // Scale effects by master amount (zero out if trigger inactive)
+        amount *= glitchActive;
+        float effBlock   = blockOffset * amount;
+        float effScan    = scanJitter * amount;
+        float effSplit   = splitAmount * amount;
+
+        // ---- Block displacement ----
+        float bandHeight = blockSize * height;
+        if (bandHeight < 1.0f) bandHeight = 1.0f;
+        float bandIndex = _floor((float)y / bandHeight);
+
+        float bandHash = hash11(bandIndex, seed);
+        float bandActive = hash11(bandIndex + 1000.0f, seed);
+
+        float blockDisp = 0.0f;
+        if (bandActive > 0.6f) {
+            blockDisp = (bandHash - 0.5f) * 2.0f * effBlock;
+        }
+
+        // ---- Scanline jitter ----
+        float scanHash = hash11((float)y * 0.7f, seed + 50.0f);
+        float scanDisp = (scanHash - 0.5f) * 2.0f * effScan;
+
+        // Combined UV offset (horizontal only, like real glitches)
+        float baseU = u + blockDisp + scanDisp;
+        float baseV = v;
+
+        // ---- RGB Split with iterations ----
+        float splitDirX = _cosf(splitAngle);
+        float splitDirY = _sinf(splitAngle);
+        float aspect = width / height;
+        splitDirY /= aspect;
+
+        int splitIters = params->splitIterations;
+        if (splitIters < 2) splitIters = 2;
+        if (splitIters > 64) splitIters = 64;
+
+        float totalR = 0.0f, totalG = 0.0f, totalB = 0.0f, totalA = 0.0f;
+        float sumR = 0.0f, sumG = 0.0f, sumB = 0.0f;
+
+        for (int i = 0; i < splitIters; i++) {
+            float t = (float)i / (float)(splitIters - 1);
+            float factor = (t - 0.5f) * 2.0f;
+
+            float su = baseU + splitDirX * effSplit * factor;
+            float sv = baseV + splitDirY * effSplit * factor;
+
+            // Color weights: R strongest at start, G at middle, B at end
+            float rW, gW, bW;
+            if (t < 0.5f) {
+                float b = t * 2.0f;
+                rW = 1.0f - b;
+                gW = b;
+                bW = 0.0f;
+            } else {
+                float b = (t - 0.5f) * 2.0f;
+                rW = 0.0f;
+                gW = 1.0f - b;
+                bW = b;
+            }
+
+            float4 s = _tex2DVecN(inimg, su, sv, 15);
+            totalR += s.x * rW;
+            totalG += s.y * gW;
+            totalB += s.z * bW;
+            totalA += s.w;
+            sumR += rW;
+            sumG += gW;
+            sumB += bW;
+        }
+
+        float outR = (sumR > 0.0f) ? totalR / sumR : 0.0f;
+        float outG = (sumG > 0.0f) ? totalG / sumG : 0.0f;
+        float outB = (sumB > 0.0f) ? totalB / sumB : 0.0f;
+        float outA = totalA / (float)splitIters;
+
+        // ---- Bit Crush / Posterize ----
+        if (bitCrush > 0.001f) {
+            // Map 0-1 to levels: 256 down to 4
+            float levels = 256.0f - bitCrush * 252.0f;
+            if (levels < 2.0f) levels = 2.0f;
+            outR = _floor(outR * levels) / levels;
+            outG = _floor(outG * levels) / levels;
+            outB = _floor(outB * levels) / levels;
+        }
+
+        // ---- Scanlines (CRT-style dark lines) ----
+        if (scanOpacity > 0.001f) {
+            float linePos = (float)y / scanWidth;
+            float lineFrac = linePos - _floor(linePos);
+            // Smooth scanline: dark in center of each line period
+            float scanline = 1.0f - scanOpacity * (1.0f - lineFrac * lineFrac * 4.0f);
+            if (lineFrac > 0.5f) {
+                float t = 1.0f - lineFrac;
+                scanline = 1.0f - scanOpacity * (1.0f - t * t * 4.0f);
+            }
+            if (scanline < 0.0f) scanline = 0.0f;
+            outR *= scanline;
+            outG *= scanline;
+            outB *= scanline;
+        }
+
+        // Clamp
+        if (outR < 0.0f) outR = 0.0f;
+        if (outG < 0.0f) outG = 0.0f;
+        if (outB < 0.0f) outB = 0.0f;
+
+        // ---- Blend with original ----
+        float4 orig = _tex2DVecN(inimg, u, v, 15);
+        float4 result;
+        result.x = orig.x + (outR - orig.x) * blend;
+        result.y = orig.y + (outG - orig.y) * blend;
+        result.z = orig.z + (outB - orig.z) * blend;
+        result.w = outA;
+
+        _tex2DVec4Write(outimg, x, y, result);
+    }
+}
+]]
+
+-- ==================== UI ====================
+function Create()
+    InImage = self:AddInput("Image", "Image", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Page 1: Glitch
+    self:BeginControlNest("Glitch", "Glitch", true)
+
+    InAmount = self:AddInput("Amount", "Amount", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.5,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 1.0,
+    })
+
+    InBlockSize = self:AddInput("Block Size", "BlockSize", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.05,
+        INP_MinAllowed = 0.005,
+        INP_MaxAllowed = 0.3,
+        INP_MinScale = 0.005,
+        INP_MaxScale = 0.3,
+    })
+
+    InBlockOffset = self:AddInput("Block Offset", "BlockOffset", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.03,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 0.2,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 0.2,
+    })
+
+    InScanJitter = self:AddInput("Scanline Jitter", "ScanJitter", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.005,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 0.05,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 0.05,
+    })
+
+    InTrigger = self:AddInput("Trigger", "Trigger", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 1.0,
+    })
+
+    InSpeed = self:AddInput("Speed", "Speed", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinAllowed = 0.01,
+        INP_MaxAllowed = 30.0,
+        INP_MinScale = 0.01,
+        INP_MaxScale = 10.0,
+    })
+
+    InSeed = self:AddInput("Seed", "Seed", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0,
+        INP_Integer = true,
+        INP_MinAllowed = 0,
+        INP_MaxAllowed = 10000,
+        INP_MinScale = 0,
+        INP_MaxScale = 100,
+    })
+
+    InAnimate = self:AddInput("Animate", "Animate", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default = 1,
+        INP_Integer = true,
+        INP_MinAllowed = 0,
+        INP_MaxAllowed = 1,
+    })
+
+    self:EndControlNest()
+
+    -- Page 2: RGB Split
+    self:BeginControlNest("RGB Split", "RGBSplit", false)
+
+    InSplitAmount = self:AddInput("Split Amount", "SplitAmount", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.01,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 0.05,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 0.05,
+    })
+
+    InSplitAngle = self:AddInput("Split Angle", "SplitAngle", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ScrewControl",
+        INP_Default = 0.0,
+        INP_MinScale = -180.0,
+        INP_MaxScale = 180.0,
+    })
+
+    InSplitIterations = self:AddInput("Iterations", "SplitIterations", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 12,
+        INP_Integer = true,
+        INP_MinAllowed = 3,
+        INP_MaxAllowed = 64,
+        INP_MinScale = 3,
+        INP_MaxScale = 64,
+    })
+
+    self:EndControlNest()
+
+    -- Page 3: Degrade
+    self:BeginControlNest("Degrade", "Degrade", false)
+
+    InBitCrush = self:AddInput("Bit Crush", "BitCrush", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 1.0,
+    })
+
+    InScanlineOpacity = self:AddInput("Scanline Opacity", "ScanlineOpacity", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 1.0,
+    })
+
+    InScanlineWidth = self:AddInput("Scanline Width", "ScanlineWidth", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 2.0,
+        INP_MinAllowed = 1.0,
+        INP_MaxAllowed = 8.0,
+        INP_MinScale = 1.0,
+        INP_MaxScale = 8.0,
+    })
+
+    InBlend = self:AddInput("Blend", "Blend", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 1.0,
+    })
+
+    self:EndControlNest()
+
+    -- Tutorial page
+    self:AddInput("Tutorial", "TutorialButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 1,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://youtu.be/muO8c0yJK8g"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Tutorial",
+    })
+
+    self:AddInput("Latest Version", "LatestVersionButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://drive.google.com/drive/folders/1T6aAJCU4FxQXYZo-I3GgRDarj0kftmP-?usp=sharing"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Latest Version",
+    })
+
+    self:AddInput("Contact Us", "ContactUsButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://neoeditfx.com/pages/contact"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Contact Us",
+    })
+
+    self:AddInput("Fuse by NeoEdit", "CreatedByNeoEdit", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "LabelControl",
+        INP_Integer = true,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        INP_Default = 1,
+        INP_External = false,
+        INP_Passive = true,
+        ICS_ControlPage = "Tutorial",
+        LBLC_DropDownButton = false,
+        LBLC_NumInputs = 0,
+        LINKS_Name = "Fuse by NeoEdit",
+    })
+
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+-- ==================== PROCESS ====================
+function Process(req)
+    local inimg = InImage:GetValue(req)
+    if not inimg then
+        OutImage:Set(req, nil)
+        return
+    end
+
+    -- Compute seed: user seed + frame number if animated
+    local userSeed = InSeed:GetValue(req).Value
+    local animate  = InAnimate:GetValue(req).Value
+    local speed    = InSpeed:GetValue(req).Value
+    local seed = userSeed
+    if animate > 0.5 then
+        seed = seed + math.floor(req.Time * speed) * 137.7
+    end
+
+    local splitAngleRad = InSplitAngle:GetValue(req).Value * math.pi / 180.0
+
+    local out = Image({IMG_Like = inimg, IMG_DeferAlloc = true})
+
+    local node = DVIPComputeNode(req, "NeoGlitchKernel", NeoGlitchSource, "NeoGlitchParams", NeoGlitchParams)
+
+    local params = node:GetParamBlock(NeoGlitchParams)
+    params.imgSize         = {inimg.DataWindow:Width(), inimg.DataWindow:Height()}
+    params.amount          = InAmount:GetValue(req).Value
+    params.blockSize       = InBlockSize:GetValue(req).Value
+    params.blockOffset     = InBlockOffset:GetValue(req).Value
+    params.scanJitter      = InScanJitter:GetValue(req).Value
+    params.seed            = seed
+    params.speed           = speed
+    params.trigger         = InTrigger:GetValue(req).Value
+    params.splitAmount     = InSplitAmount:GetValue(req).Value
+    params.splitAngle      = splitAngleRad
+    params.splitIterations = math.floor(InSplitIterations:GetValue(req).Value)
+    params.bitCrush        = InBitCrush:GetValue(req).Value
+    params.scanlineOpacity = InScanlineOpacity:GetValue(req).Value
+    params.scanlineWidth   = InScanlineWidth:GetValue(req).Value
+    params.blend           = InBlend:GetValue(req).Value
+
+    node:SetParamBlock(params)
+    node:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_TRUE)
+    node:AddInput("inimg", inimg)
+    node:AddOutput("outimg", out)
+
+    local ok = node:RunSession(req)
+
+    if not ok then
+        out = Image({IMG_Like = inimg})
+        out:Fill(Pixel({R = 0, G = 0, B = 0, A = 0}))
+    end
+
+    OutImage:Set(req, out)
+end

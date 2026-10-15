@@ -1,0 +1,13 @@
+The project files are located in the folder "Macros".
+
+You can install this project in two ways:
+
+1) Automatically - Doubleclick the *.drfx file, then click "Install" in new popup window.
+
+2) Manually - Copy the folder "Finance Infographic Widgets (LLmotion)" to the "Titles" folder.
+WIN: Program Data\Blackmagic Design\Davinci Resolve\Fusion\Templates\Edit\Titles
+MAC: Library\Application Support\Blackmagic Design\Davinci Resolve\Fusion\Templates\Edit\Titles
+
+--------
+Made by LLmotiongraphics.
+https://elements.envato.com/user/LLmotiongraphics

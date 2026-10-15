@@ -45,34 +45,23 @@ def create_social_timeline(core, format="9:16"):
         return False, "No active timeline"
         
     try:
-        width, height = "1080", "1920"
-        suffix = "_9x16 Vertical"
-        if format == "1:1":
-            width, height = "1080", "1080"
-            suffix = "_1x1 Square"
-            
-        name = timeline.GetName() + suffix
-        timeline.DuplicateTimeline(name)
-        
-        t_count = core.project.GetTimelineCount()
-        for i in range(1, t_count + 1):
-            t = core.project.GetTimelineByIndex(i)
-            if t.GetName() == name:
-                core.project.SetCurrentTimeline(t)
-                t.SetSetting("useCustomSettings", "1")
-                t.SetSetting("timelineResolutionWidth", width)
-                t.SetSetting("timelineResolutionHeight", height)
-                t.SetSetting("timelineInputResMismatchAction", "scaleToCrop")
-                
-                track_count = t.GetTrackCount("video")
-                for track_idx in range(1, track_count + 1):
-                    items = t.GetItemListInTrack("video", track_idx)
-                    if items:
-                        for item in items:
-                            item.SetProperty("Scaling", 3)
-                            
-                return True, f"Created and switched to '{name}' ({format})"
-        return False, "Failed to switch to new timeline."
+        sizes = {"9:16": ("1080", "1920"), "1:1": ("1080", "1080"), "4:5": ("1080", "1350")}
+        if format not in sizes: return False, "Choose 9:16, 1:1, or 4:5."
+        width, height = sizes[format]
+        name = core.unique_timeline_name(timeline.GetName() + "_" + format.replace(":", "x"))
+        duplicate = timeline.DuplicateTimeline(name)
+        if not duplicate: return False, "Could not duplicate the timeline."
+        core.project.SetCurrentTimeline(duplicate)
+        settings = {"useCustomSettings": "1", "timelineResolutionWidth": width, "timelineResolutionHeight": height}
+        if not all(duplicate.SetSetting(key, value) for key, value in settings.items()):
+            core.project.SetCurrentTimeline(timeline)
+            core.media_pool.DeleteTimelines([duplicate])
+            return False, "Resolve rejected the custom resolution."
+        for track in range(1, duplicate.GetTrackCount("video")+1):
+            for item in duplicate.GetItemListInTrack("video", track) or []:
+                if not item.SetProperty("Scaling", 3):
+                    return False, f"Created '{name}', but Resolve rejected scale-to-crop on a clip."
+        return True, f"Created '{name}' at {width} × {height}."
     except Exception as e:
         return False, str(e)
 
@@ -96,7 +85,7 @@ def auto_sync_audio(core):
             return False, "Need at least 2 clips selected to sync audio."
             
         # 1 = resolve.AUDIO_SYNC_WAVEFORM
-        success = core.media_pool.AutoSyncAudio(clips_list, {"audioSyncMode": 1})
+        success = core.media_pool.AutoSyncAudio(clips_list, {"syncMode": core.resolve.AUDIO_SYNC_WAVEFORM, "retainEmbeddedAudio": True, "retainVideoMetadata": True})
         
         if success:
             return True, f"✓ Successfully synced audio for {len(clips_list)} clips based on waveform."
@@ -113,7 +102,7 @@ def add_quick_title(core, text="New Title"):
         return False, "No active timeline"
         
     try:
-        item = timeline.InsertTitleIntoTimeline("Text")
+        item = timeline.InsertFusionTitleIntoTimeline("Text+")
         if not item:
             return False, "Failed to insert Title. Is the playhead at a valid point?"
         return True, "Quick Title added at playhead."
@@ -133,7 +122,7 @@ def add_adjustment_layer(core):
         if not adj_clip:
             return False, "Please add an 'Adjustment Clip' to your Media Pool. (Effects insertion cannot target Track 5 or avoid shifting footage)."
             
-        fps = float(core.project.GetSetting("timelineFrameRate"))
+        fps = float(timeline.GetSetting("timelineFrameRate"))
         tc = timeline.GetCurrentTimecode()
         secs = time_parser.parse_time(tc, fps)
         record_frame = int(round(secs * fps))
@@ -141,10 +130,12 @@ def add_adjustment_layer(core):
         # Default duration 5 seconds
         duration = int(fps * 5)
         
+        while timeline.GetTrackCount("video") < 5:
+            if not timeline.AddTrack("video"): return False, "Could not create Video Track 5."
         append_info = [{
             "mediaPoolItem": adj_clip,
             "startFrame": 0, 
-            "endFrame": duration - 1,
+            "endFrame": duration,
             "trackIndex": 5,
             "recordFrame": record_frame
         }]

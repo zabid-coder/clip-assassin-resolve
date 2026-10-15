@@ -18,30 +18,33 @@ export function CutToolsPage({ isDashboard, favorites, toggleFavorite, loading, 
         id="timecode_cutter"
         isFavorite={favorites.includes('timecode_cutter')}
         onToggleFavorite={() => toggleFavorite('timecode_cutter')}
-        description="Slices your timeline at the timecodes, timestamps, or frame numbers you enter."
-        warning="This modifies your timeline directly. Use Timeline Snapshot first if unsure."
+        description="Creates a new timeline that removes or keeps your exact time ranges."
+        warning="The source timeline is preserved. Output contains nested segments including video and audio."
         className="md:col-span-2 ring-1 ring-brand-primary/30 shadow-xl shadow-brand-primary/20"
         title="Timecode Cutter"
         icon={<Scissors size={18} />}
         category="destructive"
-        helpText="Enter ranges like 00:01:30-00:02:00 or 1:30-2:00 and the app will cut those sections from the timeline."
+        helpText="Enter ranges like 00:01:30-00:02:00 or 1:30-2:00 and the app will create an edited copy with frame-accurate boundaries. Numeric values are seconds."
       >
         <div className="flex flex-col gap-3">
           <textarea
             id="timecodeInput"
+            aria-label="Time ranges"
+            defaultValue={localStorage.getItem('clipAssassin:timecodeInput') || ''}
+            onChange={e => localStorage.setItem('clipAssassin:timecodeInput', e.target.value)}
             rows={3}
             className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-sm text-white/90 placeholder:text-white/30 focus:outline-none focus:border-brand-primary/50 transition-colors resize-none"
             placeholder="00:01:30-00:02:00&#10;00:05:00-00:06:30"
           />
-          <div className="flex gap-3">
+          <div className="responsive-fields">
             <InputField id="cutClipName" placeholder="Filter by clip name (optional)" />
             <SelectField id="cutMode" options={['Normal (Cut Inside)', 'Reverse (Keep Inside)']} />
           </div>
           <div className="flex justify-end gap-3 mt-2">
-            <div className="w-full md:w-1/3">
+            <div className="tool-action-slot">
               <ActionButton
                 text="Execute Cut"
-                category="destructive" variant="primary" requiresConfirm
+                category="destructive" variant="primary"
                 isLoading={loading['cut']}
                 disabled={!context.current_timeline}
                 title={!context.current_timeline ? 'Requires an active timeline' : undefined}
@@ -50,7 +53,7 @@ export function CutToolsPage({ isDashboard, favorites, toggleFavorite, loading, 
                   const clipName = (document.getElementById('cutClipName') as HTMLInputElement).value
                   const mode = (document.getElementById('cutMode') as HTMLSelectElement).value
                   const reverse = mode.startsWith('Reverse')
-                  runTask('cut', { timecodes, reverse, clip_name: clipName }, 'cut')
+                  return runTask('cut', { timecodes, reverse, clip_name: clipName }, 'cut')
                 }}
               />
             </div>

@@ -1,0 +1,401 @@
+--[[--
+Neo Tritone Fuse
+GPU-accelerated tritone color grading for DaVinci Resolve / Fusion
+Maps luminance to three colors: shadows, midtones, highlights
+--]]--
+
+FuRegisterClass("Neo_Tritone", CT_Tool, {
+    REGS_Name = "Neo Tritone",
+    REGS_Category = "Fuses\\Effect",
+    REGS_OpIconString = "NTr",
+    REGS_OpDescription = "GPU-accelerated tritone color grading",
+    REGS_IconID = "Icons.Tools.Icons.PseudoColor",
+    REG_TimeVariant = false,
+    REG_NoObjMatCtrls = true,
+})
+
+NeoTritoneParams = [[
+    int imgSize[2];
+    float shadowCol[3];
+    float midCol[3];
+    float highCol[3];
+    float midpoint;
+    float contrast;
+    float saturation;
+    float blend;
+    int preserveLum;
+]]
+
+NeoTritoneSource = [[
+
+__KERNEL__ void NeoTritoneKernel(
+    __CONSTANTREF__ NeoTritoneParams *params,
+    __TEXTURE2D__ inimg,
+    __TEXTURE2D_WRITE__ outimg)
+{
+    DEFINE_KERNEL_ITERATORS_XY(x, y);
+    if (x < params->imgSize[0] && y < params->imgSize[1])
+    {
+        float width  = (float)params->imgSize[0];
+        float height = (float)params->imgSize[1];
+        float u = ((float)x + 0.5f) / width;
+        float v = ((float)y + 0.5f) / height;
+
+        float4 s = _tex2DVecN(inimg, u, v, 15);
+
+        float sR = params->shadowCol[0], sG = params->shadowCol[1], sB = params->shadowCol[2];
+        float mR = params->midCol[0],    mG = params->midCol[1],    mB = params->midCol[2];
+        float hR = params->highCol[0],   hG = params->highCol[1],   hB = params->highCol[2];
+        float midpoint  = params->midpoint;
+        float contrast  = params->contrast;
+        float blend     = params->blend;
+
+        // Luminance
+        float lum = 0.2126f * s.x + 0.7152f * s.y + 0.0722f * s.z;
+
+        // Apply contrast curve to luminance (S-curve centered on 0.5)
+        if (contrast > 0.001f || contrast < -0.001f) {
+            float c = contrast + 1.0f;
+            lum = ((lum - 0.5f) * c) + 0.5f;
+            if (lum < 0.0f) lum = 0.0f;
+            if (lum > 1.0f) lum = 1.0f;
+        }
+
+        // Tritone mapping: shadow -> mid -> highlight
+        float outR, outG, outB;
+        if (lum <= midpoint) {
+            float t = (midpoint > 0.001f) ? lum / midpoint : 0.0f;
+            // Smooth interpolation
+            t = t * t * (3.0f - 2.0f * t);
+            outR = sR + (mR - sR) * t;
+            outG = sG + (mG - sG) * t;
+            outB = sB + (mB - sB) * t;
+        } else {
+            float range = 1.0f - midpoint;
+            float t = (range > 0.001f) ? (lum - midpoint) / range : 1.0f;
+            t = t * t * (3.0f - 2.0f * t);
+            outR = mR + (hR - mR) * t;
+            outG = mG + (hG - mG) * t;
+            outB = mB + (hB - mB) * t;
+        }
+
+        // Saturation: desaturate tritone result toward grey
+        float sat = params->saturation;
+        if (sat < 1.0f) {
+            float grey = 0.2126f * outR + 0.7152f * outG + 0.0722f * outB;
+            outR = grey + (outR - grey) * sat;
+            outG = grey + (outG - grey) * sat;
+            outB = grey + (outB - grey) * sat;
+        }
+
+        // Preserve original luminance
+        if (params->preserveLum == 1) {
+            float tritLum = 0.2126f * outR + 0.7152f * outG + 0.0722f * outB;
+            if (tritLum > 0.001f) {
+                float ratio = lum / tritLum;
+                outR *= ratio;
+                outG *= ratio;
+                outB *= ratio;
+            }
+        }
+
+        // Blend with original
+        float4 result;
+        result.x = s.x + (outR - s.x) * blend;
+        result.y = s.y + (outG - s.y) * blend;
+        result.z = s.z + (outB - s.z) * blend;
+        result.w = s.w;
+
+        _tex2DVec4Write(outimg, x, y, result);
+    }
+}
+]]
+
+-- ==================== UI ====================
+function Create()
+    InImage = self:AddInput("Image", "Image", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    InPreset = self:AddInput("Preset", "Preset", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0,
+        INP_Integer = true,
+        INP_DoNotifyChanged = true,
+        { CCS_AddString = "Custom" },
+        { CCS_AddString = "Cyan Blue" },
+        { CCS_AddString = "Sepia" },
+        { CCS_AddString = "Teal & Orange" },
+        { CCS_AddString = "Blueprint" },
+        { CCS_AddString = "Sunset" },
+        { CCS_AddString = "Noir Green" },
+        CC_LabelPosition = "Horizontal",
+    })
+
+    -- Shadow Color
+    self:BeginControlNest("Colors", "Colors", true)
+
+    InShadowR = self:AddInput("Shadow", "ShadowR", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.02,
+        IC_ControlGroup = 1,
+        IC_ControlID = 0,
+    })
+    InShadowG = self:AddInput("", "ShadowG", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.02,
+        IC_ControlGroup = 1,
+        IC_ControlID = 1,
+    })
+    InShadowB = self:AddInput("", "ShadowB", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.05,
+        IC_ControlGroup = 1,
+        IC_ControlID = 2,
+    })
+
+    -- Midtone Color
+    InMidR = self:AddInput("Midtone", "MidR", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 2,
+        IC_ControlID = 0,
+    })
+    InMidG = self:AddInput("", "MidG", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.544,
+        IC_ControlGroup = 2,
+        IC_ControlID = 1,
+    })
+    InMidB = self:AddInput("", "MidB", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 1.0,
+        IC_ControlGroup = 2,
+        IC_ControlID = 2,
+    })
+
+    -- Highlight Color
+    InHighR = self:AddInput("Highlight", "HighR", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 1.0,
+        IC_ControlGroup = 3,
+        IC_ControlID = 0,
+    })
+    InHighG = self:AddInput("", "HighG", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 1.0,
+        IC_ControlGroup = 3,
+        IC_ControlID = 1,
+    })
+    InHighB = self:AddInput("", "HighB", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 1.0,
+        IC_ControlGroup = 3,
+        IC_ControlID = 2,
+    })
+
+    self:EndControlNest()
+
+    -- Settings
+    self:BeginControlNest("Settings", "Settings", false)
+
+    InMidpoint = self:AddInput("Midpoint", "Midpoint", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.5,
+        INP_MinAllowed = 0.05,
+        INP_MaxAllowed = 0.95,
+    })
+
+    InSaturation = self:AddInput("Saturation", "Saturation", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 2.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 2.0,
+    })
+
+    InContrast = self:AddInput("Contrast", "Contrast", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinAllowed = -1.0,
+        INP_MaxAllowed = 2.0,
+        INP_MinScale = -1.0,
+        INP_MaxScale = 2.0,
+    })
+
+    InPreserveLum = self:AddInput("Preserve Luminance", "PreserveLum", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default = 1,
+        INP_Integer = true,
+        INP_MinAllowed = 0,
+        INP_MaxAllowed = 1,
+    })
+
+    InBlend = self:AddInput("Blend", "Blend", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 1.0,
+    })
+
+    self:EndControlNest()
+
+    -- Tutorial page
+    self:AddInput("Tutorial", "TutorialButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 1,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://youtu.be/LtkkotTvh5w"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Tutorial",
+    })
+
+    self:AddInput("Latest Version", "LatestVersionButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://drive.google.com/drive/folders/1T6aAJCU4FxQXYZo-I3GgRDarj0kftmP-?usp=sharing"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Latest Version",
+    })
+
+    self:AddInput("Contact Us", "ContactUsButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://neoeditfx.com/pages/contact"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Contact Us",
+    })
+
+    self:AddInput("Fuse by NeoEdit", "CreatedByNeoEdit", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "LabelControl",
+        INP_Integer = true,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        INP_Default = 1,
+        INP_External = false,
+        INP_Passive = true,
+        ICS_ControlPage = "Tutorial",
+        LBLC_DropDownButton = false,
+        LBLC_NumInputs = 0,
+        LINKS_Name = "Fuse by NeoEdit",
+    })
+
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+-- ==================== PRESETS ====================
+function NotifyChanged(inp, param, time)
+    if inp == InPreset then
+        local p = param.Value
+        -- 0=Custom, 1=Cyan Blue, 2=Sepia, 3=Teal&Orange, 4=Blueprint, 5=Sunset, 6=Noir Green
+        if p == 1 then
+            -- Cyan Blue (default)
+            InShadowR:SetSource(Number(0.02), time)  InShadowG:SetSource(Number(0.02), time)  InShadowB:SetSource(Number(0.05), time)
+            InMidR:SetSource(Number(0.0), time)       InMidG:SetSource(Number(0.544), time)    InMidB:SetSource(Number(1.0), time)
+            InHighR:SetSource(Number(1.0), time)      InHighG:SetSource(Number(1.0), time)     InHighB:SetSource(Number(1.0), time)
+        elseif p == 2 then
+            -- Sepia
+            InShadowR:SetSource(Number(0.05), time)  InShadowG:SetSource(Number(0.03), time)  InShadowB:SetSource(Number(0.01), time)
+            InMidR:SetSource(Number(0.6), time)       InMidG:SetSource(Number(0.4), time)      InMidB:SetSource(Number(0.2), time)
+            InHighR:SetSource(Number(1.0), time)      InHighG:SetSource(Number(0.95), time)    InHighB:SetSource(Number(0.8), time)
+        elseif p == 3 then
+            -- Teal & Orange
+            InShadowR:SetSource(Number(0.0), time)   InShadowG:SetSource(Number(0.08), time)  InShadowB:SetSource(Number(0.1), time)
+            InMidR:SetSource(Number(0.0), time)       InMidG:SetSource(Number(0.35), time)     InMidB:SetSource(Number(0.4), time)
+            InHighR:SetSource(Number(1.0), time)      InHighG:SetSource(Number(0.7), time)     InHighB:SetSource(Number(0.4), time)
+        elseif p == 4 then
+            -- Blueprint
+            InShadowR:SetSource(Number(0.0), time)   InShadowG:SetSource(Number(0.0), time)   InShadowB:SetSource(Number(0.15), time)
+            InMidR:SetSource(Number(0.1), time)       InMidG:SetSource(Number(0.2), time)      InMidB:SetSource(Number(0.6), time)
+            InHighR:SetSource(Number(0.8), time)      InHighG:SetSource(Number(0.85), time)    InHighB:SetSource(Number(1.0), time)
+        elseif p == 5 then
+            -- Sunset
+            InShadowR:SetSource(Number(0.1), time)   InShadowG:SetSource(Number(0.0), time)   InShadowB:SetSource(Number(0.15), time)
+            InMidR:SetSource(Number(0.9), time)       InMidG:SetSource(Number(0.3), time)      InMidB:SetSource(Number(0.1), time)
+            InHighR:SetSource(Number(1.0), time)      InHighG:SetSource(Number(0.9), time)     InHighB:SetSource(Number(0.5), time)
+        elseif p == 6 then
+            -- Noir Green
+            InShadowR:SetSource(Number(0.0), time)   InShadowG:SetSource(Number(0.02), time)  InShadowB:SetSource(Number(0.0), time)
+            InMidR:SetSource(Number(0.05), time)      InMidG:SetSource(Number(0.4), time)      InMidB:SetSource(Number(0.1), time)
+            InHighR:SetSource(Number(0.7), time)      InHighG:SetSource(Number(1.0), time)     InHighB:SetSource(Number(0.75), time)
+        end
+    end
+end
+
+-- ==================== PROCESS ====================
+function Process(req)
+    local inimg = InImage:GetValue(req)
+    if not inimg then
+        OutImage:Set(req, nil)
+        return
+    end
+
+    local out = Image({IMG_Like = inimg, IMG_DeferAlloc = true})
+
+    local node = DVIPComputeNode(req, "NeoTritoneKernel", NeoTritoneSource, "NeoTritoneParams", NeoTritoneParams)
+
+    local params = node:GetParamBlock(NeoTritoneParams)
+    params.imgSize    = {inimg.DataWindow:Width(), inimg.DataWindow:Height()}
+    params.shadowCol  = {InShadowR:GetValue(req).Value, InShadowG:GetValue(req).Value, InShadowB:GetValue(req).Value}
+    params.midCol     = {InMidR:GetValue(req).Value, InMidG:GetValue(req).Value, InMidB:GetValue(req).Value}
+    params.highCol    = {InHighR:GetValue(req).Value, InHighG:GetValue(req).Value, InHighB:GetValue(req).Value}
+    params.midpoint    = InMidpoint:GetValue(req).Value
+    params.contrast    = InContrast:GetValue(req).Value
+    params.saturation  = InSaturation:GetValue(req).Value
+    params.blend       = InBlend:GetValue(req).Value
+    params.preserveLum = math.floor(InPreserveLum:GetValue(req).Value)
+
+    node:SetParamBlock(params)
+    node:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_TRUE)
+    node:AddInput("inimg", inimg)
+    node:AddOutput("outimg", out)
+
+    local ok = node:RunSession(req)
+
+    if not ok then
+        out = Image({IMG_Like = inimg})
+        out:Fill(Pixel({R = 0, G = 0, B = 0, A = 0}))
+    end
+
+    OutImage:Set(req, out)
+end

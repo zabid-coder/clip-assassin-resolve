@@ -16,7 +16,7 @@ DIST_DIR = BASE_DIR / "dist"
 BUILD_DIR = BASE_DIR / "build"
 FRONTEND_DIR = BASE_DIR / "frontend"
 APP_NAME = "Clip Assassin"
-VERSION = "2.0.1"
+VERSION = "2.1.1"
 
 def check_system():
     """Check current system platform"""
@@ -58,10 +58,7 @@ def clean_build_artifacts():
         shutil.rmtree(DIST_DIR, ignore_errors=True)
         print(f"   Removed {DIST_DIR}")
     
-    spec_file = BASE_DIR / f"{APP_NAME}.spec"
-    if spec_file.exists():
-        spec_file.unlink()
-        print(f"   Removed {spec_file}")
+    # Keep the checked-in PyInstaller spec; only generated build outputs are disposable.
 
 def get_icon_path():
     """Get appropriate icon for platform"""
@@ -96,7 +93,8 @@ def build_pyinstaller(system):
         f"--add-data=frontend/dist{sep}frontend/dist",
         f"--add-data=presets{sep}presets",
         f"--add-data=templates{sep}templates",
-        "--collect-all=pywebview",
+        "--collect-all=webview",
+        "--collect-all=keyring",
         "--collect-all=uvicorn",
         "--collect-all=fastapi",
         "--hidden-import=modules.master_ingest",

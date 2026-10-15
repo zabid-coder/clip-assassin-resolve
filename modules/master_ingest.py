@@ -3,6 +3,7 @@ import sys
 import time
 import subprocess
 import logging
+from services.jobs import checkpoint
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Tuple
@@ -15,18 +16,7 @@ try:
 except ImportError:
     from template_engine import template_db
 
-SUPPORTED_EXTENSIONS = {
-    ".mp4", ".mov", ".mkv", ".m4v", ".avi", ".braw", ".arri",
-    ".mp3", ".wav", ".aac", ".m4a",
-    ".png", ".jpg", ".jpeg", ".tiff"
-}
-
-IGNORED_FOLDERS = {
-    "davinci resolve database", "davinci database", "database",
-    "after effects", "fcpx", "illustrator", "photoshop", "premiere",
-    "export", "exports", "production documents", "documents",
-    ".ds_store", "__macosx", ".git", ".idea"
-}
+from services.ingest_plan import SUPPORTED_EXTENSIONS, IGNORED_FOLDERS, plan_ingest
 
 def get_versioned_project_name(base_name: str, existing_projects: list[str]) -> str:
     has_match = any(p == base_name or p.startswith(f"{base_name}_v") for p in existing_projects)
@@ -85,10 +75,19 @@ def create_master_folder_structure(parent_dir: str, project_name: str, client_na
     if not parent_dir or not os.path.exists(parent_dir):
         return False, f"Invalid parent folder path: '{parent_dir}'", ""
     
-    clean_proj = project_name.strip() if project_name else "Untitled Project"
+    clean_proj = project_name.strip() if project_name else ""
+    if not clean_proj:
+        return False, "Project name is required", ""
     clean_client = client_name.strip() if client_name else ""
     date_str = custom_date.strip() if custom_date and custom_date.strip() else time.strftime("%Y-%m-%d")
     
+    for part in (clean_proj, clean_client, date_str):
+        if part in (".", "..") or any(c in part for c in '/\\\0'):
+            return False, "Project, client and date must not contain path separators", ""
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return False, "Date must use YYYY-MM-DD", ""
     if clean_client:
         folder_name = f"{date_str}_{clean_client}_{clean_proj}"
     else:
@@ -143,6 +142,14 @@ def process_master_ingest(core, master_folder_path: str) -> tuple[bool, str]:
     if not master_folder_path or not os.path.isdir(master_folder_path):
         return False, f"Invalid master folder path: '{master_folder_path}'"
     
+    try:
+        plan = plan_ingest(master_folder_path)
+    except (ValueError, OSError) as exc:
+        return False, str(exc)
+    if not plan['groups']:
+        return False, 'No supported footage found. No Resolve project was created.'
+    master_folder_path = plan['root']
+
     connected, conn_msg = ensure_resolve_running(core)
     if not connected:
         return False, conn_msg
@@ -153,23 +160,13 @@ def process_master_ingest(core, master_folder_path: str) -> tuple[bool, str]:
     
     base_project_name = os.path.basename(os.path.normpath(master_folder_path))
     
-    # 1. Project Library (Database) Selection: Check if a database with this name already exists in Resolve
-    try:
-        db_list = pm.GetDatabaseList() or []
-        for db in db_list:
-            if isinstance(db, dict) and db.get("DbName") == base_project_name:
-                pm.SetCurrentDatabase(db)
-                break
-    except Exception as e:
-        logger.info(f"Database switch note: {e}")
-
+    # Keep the user's active project library; ingest must not switch databases.
+    # Project Library Selection
     # 2. Project Creation & Versioning
     existing_projects = pm.GetProjectListInCurrentFolder() or []
     target_project_name = get_versioned_project_name(base_project_name, existing_projects)
     
     project = pm.CreateProject(target_project_name)
-    if not project:
-        project = pm.LoadProject(target_project_name)
     if not project:
         return False, f"Failed to create/open project: '{target_project_name}'"
     
@@ -198,87 +195,51 @@ def process_master_ingest(core, master_folder_path: str) -> tuple[bool, str]:
     # 3. Create 'Projects' Bin under Master to hold all generated Timelines
     projects_bin = media_pool.AddSubFolder(root_folder, "Projects")
     
-    # Check if there is a 'Raw Footages' or 'Footage' folder on disk
-    raw_footages_dir = None
-    all_subitems = os.listdir(master_folder_path)
-    for item in all_subitems:
-        full_p = os.path.join(master_folder_path, item)
-        if os.path.isdir(full_p) and item.lower() in ["raw footages", "raw footage", "footage", "raw"]:
-            raw_footages_dir = full_p
-            break
-            
-    # List of card/footage folders to process: (card_name, folder_path)
-    cards_to_process = []
-    
-    if raw_footages_dir:
-        # Create 'Raw Footages' Bin under Master
-        raw_bin = media_pool.AddSubFolder(root_folder, "Raw Footages")
-        
-        # Collect Card 01, Card 02 folders inside Raw Footages
-        card_dirs = [f for f in os.listdir(raw_footages_dir) if os.path.isdir(os.path.join(raw_footages_dir, f))]
-        for card in sorted(card_dirs):
-            if card.lower() not in IGNORED_FOLDERS:
-                cards_to_process.append((card, os.path.join(raw_footages_dir, card)))
-    else:
-        # Create 'Footage' Bin under Master
-        raw_bin = media_pool.AddSubFolder(root_folder, "Footage")
-        
-        # Collect valid subfolders directly from Master Folder
-        for item in sorted(all_subitems):
-            full_p = os.path.join(master_folder_path, item)
-            if os.path.isdir(full_p) and item.lower() not in IGNORED_FOLDERS:
-                cards_to_process.append((item, full_p))
-                
-    # Also check if BG Music / Audio folder exists on disk
-    bg_music_dir = None
-    for item in all_subitems:
-        full_p = os.path.join(master_folder_path, item)
-        if os.path.isdir(full_p) and item.lower() in ["bg music", "audio", "music", "sound"]:
-            bg_music_dir = (item, full_p)
-            break
-
-    # 4. Import Footage & Generate Timelines
-    for card_name, folder_path in cards_to_process:
-        # Create Card Bin inside Raw Footages Bin
-        card_bin = media_pool.AddSubFolder(raw_bin, card_name)
-        if card_bin:
-            media_pool.SetCurrentFolder(card_bin)
-        
-        # Collect supported media files recursively inside card folder
-        media_files = []
-        for r, d, files in os.walk(folder_path):
-            for file in files:
-                ext = os.path.splitext(file)[1].lower()
-                if ext in SUPPORTED_EXTENSIONS:
-                    media_files.append(os.path.join(r, file))
-        
-        if media_files:
-            imported_items = media_pool.ImportMedia(media_files)
-            if imported_items:
-                # Switch to Projects Bin to create the Timeline inside Projects Bin!
-                if projects_bin:
-                    media_pool.SetCurrentFolder(projects_bin)
-                
-                tl_name = f"{card_name} Timeline"
-                tl = media_pool.CreateTimelineFromClips(tl_name, imported_items)
-                if tl:
-                    created_timelines.append(tl_name)
-                    
-    # 5. Import BG Music into 'BG Music' Bin under Master (if exists)
-    if bg_music_dir:
-        b_name, b_path = bg_music_dir
-        music_bin = media_pool.AddSubFolder(root_folder, b_name)
-        if music_bin:
+    # Mirror the physical grouping, including camera/day levels, without flattening cards.
+    bins = {(): root_folder}
+    failures = []
+    for group_index, group in enumerate(plan['groups']):
+        checkpoint(15 + group_index / max(1, len(plan['groups'])) * 75,
+                   f"Importing {group_index + 1}/{len(plan['groups'])}: {group['folder']}")
+        parts = tuple(group['parts']) or ('Loose Media',)
+        parent = root_folder
+        for depth in range(1, len(parts) + 1):
+            key = parts[:depth]
+            if key not in bins:
+                bins[key] = media_pool.AddSubFolder(parent, parts[depth - 1])
+            parent = bins[key]
+            if not parent:
+                return False, f"Could not create bin for {group['folder']}. Partial project retained."
+        media_pool.SetCurrentFolder(parent)
+        imported_items = media_pool.ImportMedia(group['files']) or []
+        if isinstance(imported_items, dict):
+            imported_items = list(imported_items.values())
+        if len(imported_items) != len(group['files']):
+            failures.append(f"{group['folder']}: imported {len(imported_items)}/{len(group['files'])} files")
+        if imported_items:
+            if not projects_bin:
+                return False, 'Could not create Projects bin. Partial project retained.'
+            media_pool.SetCurrentFolder(projects_bin)
+            timeline = media_pool.CreateTimelineFromClips(group['timeline'], imported_items)
+            if timeline:
+                created_timelines.append(group['timeline'])
+            else:
+                failures.append(f"Could not create {group['timeline']}")
+    if plan['audio_files']:
+        music_bin = media_pool.AddSubFolder(root_folder, 'Audio & Music')
+        if not music_bin:
+            failures.append('Could not create Audio & Music bin')
+        else:
             media_pool.SetCurrentFolder(music_bin)
-            m_files = []
-            for r, d, files in os.walk(b_path):
-                for file in files:
-                    ext = os.path.splitext(file)[1].lower()
-                    if ext in SUPPORTED_EXTENSIONS:
-                        m_files.append(os.path.join(r, file))
-            if m_files:
-                media_pool.ImportMedia(m_files)
-    
+            imported_audio = media_pool.ImportMedia(plan['audio_files']) or []
+            if len(imported_audio) != len(plan['audio_files']):
+                failures.append(f"Audio: imported {len(imported_audio)}/{len(plan['audio_files'])} files")
+
+    pm.SaveProject()
+    if failures:
+        return False, f"Project '{target_project_name}' partially completed with {len(created_timelines)} timelines. " + '; '.join(failures)
+    if not created_timelines:
+        return False, f"Project '{target_project_name}' was created, but no supported footage was imported. Check media folders and codecs."
     return True, f"✓ Successfully created project '{target_project_name}' with {len(created_timelines)} Card Timelines inside Projects Bin: {', '.join(created_timelines)}"
 
 

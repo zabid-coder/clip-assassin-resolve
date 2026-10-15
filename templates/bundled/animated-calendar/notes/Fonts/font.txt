@@ -1,0 +1,1 @@
+This project uses Open Sans font, which comes with Davinci by defaut (Regular, Bold, ExtraBold)\nhttps://fonts.google.com/specimen/Open+Sans\n\nIf the macro doesn't work (you see black screen only), you need to download and install required fonts.\n\n

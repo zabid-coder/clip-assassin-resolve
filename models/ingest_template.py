@@ -4,7 +4,7 @@ Supports dynamic variables, loops, custom parameters, and validation rules
 """
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 import json
 
 
@@ -38,6 +38,7 @@ class FolderNode(BaseModel):
     type: str = "folder"  # "folder" or "file"
     children: Optional[List['FolderNode']] = None
     loop_variable: Optional[str] = None  # e.g., "camera" for Camera 1..N
+    loop_index: Optional[str] = None  # Optional index name when loop_variable is a count parameter
     loop_start: int = 1
     loop_end: Optional[int] = None  # If None, determined by parameter
     placeholder_content: Optional[str] = None  # For files
@@ -96,4 +97,4 @@ class IngestTemplate(BaseModel):
 
 
 # Update forward references
-FolderNode.update_forward_refs()
+FolderNode.model_rebuild()

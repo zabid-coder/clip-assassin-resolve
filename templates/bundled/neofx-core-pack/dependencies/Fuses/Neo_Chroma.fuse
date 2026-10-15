@@ -1,0 +1,374 @@
+--[[--
+Neo Chroma Fuse
+GPU-accelerated chromatic aberration for DaVinci Resolve / Fusion
+--]]--
+
+FuRegisterClass("Neo_Chroma", CT_Tool, {
+    REGS_Name = "Neo Chroma",
+    REGS_Category = "Fuses\\Effect",
+    REGS_OpIconString = "NCh",
+    REGS_IconID = "Icons.Tools.Icons.ChromaticAberrationRemoval",
+    REGS_OpDescription = "GPU-accelerated chromatic aberration",
+    REG_TimeVariant = false,
+    REG_NoObjMatCtrls = true,
+})
+
+NeoChromaParams = [[
+    int imgSize[2];
+    float displaceAmount;
+    float displaceAngle;
+    float zoomSize;
+    float rotAngle;
+    int iterations;
+    float colStart[3];
+    float colMid[3];
+    float colEnd[3];
+]]
+
+NeoChromaSource = [[
+
+#define tex _tex2DVecN
+
+__KERNEL__ void NeoChromaKernel(
+    __CONSTANTREF__ NeoChromaParams *params,
+    __TEXTURE2D__ inimg,
+    __TEXTURE2D_WRITE__ outimg)
+{
+    DEFINE_KERNEL_ITERATORS_XY(x, y);
+    if (x < params->imgSize[0] && y < params->imgSize[1])
+    {
+        float width  = (float)params->imgSize[0];
+        float height = (float)params->imgSize[1];
+        float u = ((float)x + 0.5f) / width;
+        float v = ((float)y + 0.5f) / height;
+
+        float dispAmt   = params->displaceAmount;
+        float dispAng   = params->displaceAngle;
+        float zoomSize  = params->zoomSize;
+        float rotAngle  = params->rotAngle;
+        int   iters     = params->iterations;
+        if (iters < 2) iters = 2;
+
+        // Color endpoints
+        float sR = params->colStart[0], sG = params->colStart[1], sB = params->colStart[2];
+        float mR = params->colMid[0],   mG = params->colMid[1],   mB = params->colMid[2];
+        float eR = params->colEnd[0],   eG = params->colEnd[1],   eB = params->colEnd[2];
+
+        // Displace direction
+        float dirX = _cosf(dispAng);
+        float dirY = _sinf(dispAng);
+        float aspect = width / height;
+        dirY /= aspect;
+
+        float totalR = 0.0f, totalG = 0.0f, totalB = 0.0f, totalA = 0.0f;
+        float sumR = 0.0f, sumG = 0.0f, sumB = 0.0f;
+
+        for (int i = 0; i < iters; i++) {
+            float t = (float)i / (float)(iters - 1);
+
+            float factor = (t - 0.5f) * 2.0f;
+
+            float lu = u - 0.5f;
+            float lv = v - 0.5f;
+
+            // Zoom: R=little, G=mid, B=most (t goes 0->1)
+            float scale = 1.0f + zoomSize * t;
+            if (scale < 0.01f) scale = 0.01f;
+            float zu = lu / scale;
+            float zv = lv / scale;
+
+            // Rotation
+            float ang = rotAngle * factor;
+            float cosA = _cosf(ang);
+            float sinA = _sinf(ang);
+            float ru = zu * cosA - zv * sinA;
+            float rv = zu * sinA + zv * cosA;
+
+            // Back to UV + linear displacement (scaled down for usable range)
+            float su = ru + 0.5f + dirX * dispAmt * 0.2f * factor;
+            float sv = rv + 0.5f + dirY * dispAmt * 0.2f * factor;
+
+            // Interpolate color weights: start -> mid -> end
+            float rW, gW, bW;
+            if (t < 0.5f) {
+                float blend = t * 2.0f;
+                rW = sR + (mR - sR) * blend;
+                gW = sG + (mG - sG) * blend;
+                bW = sB + (mB - sB) * blend;
+            } else {
+                float blend = (t - 0.5f) * 2.0f;
+                rW = mR + (eR - mR) * blend;
+                gW = mG + (eG - mG) * blend;
+                bW = mB + (eB - mB) * blend;
+            }
+
+            float4 s = tex(inimg, su, sv, 15);
+            totalR += s.x * rW;
+            totalG += s.y * gW;
+            totalB += s.z * bW;
+            totalA += s.w;
+            sumR += rW;
+            sumG += gW;
+            sumB += bW;
+        }
+
+        float4 outColor;
+        outColor.x = (sumR > 0.0f) ? totalR / sumR : 0.0f;
+        outColor.y = (sumG > 0.0f) ? totalG / sumG : 0.0f;
+        outColor.z = (sumB > 0.0f) ? totalB / sumB : 0.0f;
+        outColor.w = totalA / (float)iters;
+
+        _tex2DVec4Write(outimg, x, y, outColor);
+    }
+}
+]]
+
+function Create()
+    InImage = self:AddInput("Image", "Image", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Page 1: Controls
+    self:BeginControlNest("Controls", "Controls", true)
+
+    InDisplaceAmount = self:AddInput("Displace Amount", "DisplaceAmount", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.01,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 0.5,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 0.5,
+    })
+
+    InDisplaceAngle = self:AddInput("Displace Angle", "DisplaceAngle", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ScrewControl",
+        INP_Default = 0.0,
+        INP_MinScale = -180.0,
+        INP_MaxScale = 180.0,
+    })
+
+    InSize = self:AddInput("Size", "Size", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 0.5,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 0.5,
+    })
+
+    InAngle = self:AddInput("Angle", "Angle", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ScrewControl",
+        INP_Default = 0.0,
+        INP_MinScale = -10.0,
+        INP_MaxScale = 10.0,
+    })
+
+    InIterations = self:AddInput("Iterations", "Iterations", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 12,
+        INP_Integer = true,
+        INP_MinAllowed = 3,
+        INP_MaxAllowed = 64,
+        INP_MinScale = 3,
+        INP_MaxScale = 64,
+    })
+
+    self:EndControlNest()
+
+    -- Page 2: Colors
+    self:BeginControlNest("Colors", "Colors", false)
+
+    InColorStart = self:AddInput("Start Color", "ColorStart", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 1.0,
+        IC_ControlGroup = 1,
+        IC_ControlID = 0,
+
+    })
+    InColorStartG = self:AddInput("", "ColorStartGreen", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 1,
+        IC_ControlID = 1,
+
+    })
+    InColorStartB = self:AddInput("", "ColorStartBlue", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 1,
+        IC_ControlID = 2,
+
+    })
+
+    InColorMid = self:AddInput("Mid Color", "ColorMid", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 2,
+        IC_ControlID = 0,
+
+    })
+    InColorMidG = self:AddInput("", "ColorMidGreen", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 1.0,
+        IC_ControlGroup = 2,
+        IC_ControlID = 1,
+
+    })
+    InColorMidB = self:AddInput("", "ColorMidBlue", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 2,
+        IC_ControlID = 2,
+
+    })
+
+    InColorEnd = self:AddInput("End Color", "ColorEnd", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 3,
+        IC_ControlID = 0,
+
+    })
+    InColorEndG = self:AddInput("", "ColorEndGreen", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 3,
+        IC_ControlID = 1,
+
+    })
+    InColorEndB = self:AddInput("", "ColorEndBlue", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 1.0,
+        IC_ControlGroup = 3,
+        IC_ControlID = 2,
+
+    })
+
+    self:EndControlNest()
+
+    -- Tutorial page
+    self:AddInput("Tutorial", "TutorialButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 1,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://youtu.be/eECovaYV6W4"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Tutorial",
+    })
+
+    self:AddInput("Latest Version", "LatestVersionButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://drive.google.com/drive/folders/1T6aAJCU4FxQXYZo-I3GgRDarj0kftmP-?usp=sharing"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Latest Version",
+    })
+
+    self:AddInput("Contact Us", "ContactUsButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://neoeditfx.com/pages/contact"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Contact Us",
+    })
+
+    self:AddInput("Fuse by NeoEdit", "CreatedByNeoEdit", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "LabelControl",
+        INP_Integer = true,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        INP_Default = 1,
+        INP_External = false,
+        INP_Passive = true,
+        ICS_ControlPage = "Tutorial",
+        LBLC_DropDownButton = false,
+        LBLC_NumInputs = 0,
+        LINKS_Name = "Fuse by NeoEdit",
+    })
+
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    local inimg = InImage:GetValue(req)
+    if not inimg then
+        OutImage:Set(req, nil)
+        return
+    end
+
+    local displaceAmount = InDisplaceAmount:GetValue(req).Value
+    local displaceAngle  = InDisplaceAngle:GetValue(req).Value
+    local zoomSize       = InSize:GetValue(req).Value
+    local rotAngle       = InAngle:GetValue(req).Value
+    local iterations     = InIterations:GetValue(req).Value
+
+    local dispAngRad = displaceAngle * math.pi / 180.0
+    local rotAngRad  = rotAngle * math.pi / 180.0
+
+    local out = Image({IMG_Like = inimg, IMG_DeferAlloc = true})
+
+    local node = DVIPComputeNode(req, "NeoChromaKernel", NeoChromaSource, "NeoChromaParams", NeoChromaParams)
+
+    local params = node:GetParamBlock(NeoChromaParams)
+    params.imgSize        = {inimg.DataWindow:Width(), inimg.DataWindow:Height()}
+    params.displaceAmount = displaceAmount
+    params.displaceAngle  = dispAngRad
+    params.zoomSize       = zoomSize
+    params.rotAngle       = rotAngRad
+    params.iterations     = math.floor(iterations)
+    params.colStart       = {InColorStart:GetValue(req).Value, InColorStartG:GetValue(req).Value, InColorStartB:GetValue(req).Value}
+    params.colMid         = {InColorMid:GetValue(req).Value, InColorMidG:GetValue(req).Value, InColorMidB:GetValue(req).Value}
+    params.colEnd         = {InColorEnd:GetValue(req).Value, InColorEndG:GetValue(req).Value, InColorEndB:GetValue(req).Value}
+
+    node:SetParamBlock(params)
+    node:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_TRUE)
+    node:AddInput("inimg", inimg)
+    node:AddOutput("outimg", out)
+
+    local ok = node:RunSession(req)
+
+    if not ok then
+        out = Image({IMG_Like = inimg})
+        out:Fill(Pixel({R = 0, G = 0, B = 0, A = 0}))
+    end
+
+    OutImage:Set(req, out)
+end

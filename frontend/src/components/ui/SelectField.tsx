@@ -13,11 +13,14 @@ export const SelectField: React.FC<SelectFieldProps> = ({ id, options, category 
   const ringStyle = INPUT_STYLES.focusRing(category);
 
   return (
-    <div className="relative w-full">
+    <div className="form-field">
+      <label htmlFor={id} className="block text-xs text-white/60 mb-2">{id.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase())}</label>
+      <div className="select-control">
       <select 
-        id={id} 
-        defaultValue={localStorage.getItem(id) || options[0]}
-        onChange={(e) => localStorage.setItem(id, e.target.value)}
+        id={id}
+        aria-label={id.replace(/([A-Z])/g, ' $1')}
+        defaultValue={localStorage.getItem(`clipAssassin:${id}`) || options[0]}
+        onChange={(e) => localStorage.setItem(`clipAssassin:${id}`, e.target.value)}
         className={`${INPUT_STYLES.base} pr-10 appearance-none cursor-pointer`}
         style={ringStyle}
       >
@@ -25,6 +28,7 @@ export const SelectField: React.FC<SelectFieldProps> = ({ id, options, category 
       </select>
       <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-white/40">
         <ChevronDown size={16} />
+      </div>
       </div>
     </div>
   );

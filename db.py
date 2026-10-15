@@ -12,11 +12,11 @@ def get_app_data_dir():
     else:
         return os.path.join(os.path.expanduser('~'), f".{app_name.lower()}")
 
-data_dir = get_app_data_dir()
+data_dir = os.path.dirname(os.path.abspath(os.environ["CLIP_ASSASSIN_DB_PATH"])) if os.environ.get("CLIP_ASSASSIN_DB_PATH") else get_app_data_dir()
 if not os.path.exists(data_dir):
     os.makedirs(data_dir)
 
-DB_PATH = os.path.join(data_dir, "settings.db")
+DB_PATH = os.environ.get("CLIP_ASSASSIN_DB_PATH", os.path.join(data_dir, "settings.db"))
 
 def get_db_connection():
     return sqlite3.connect(DB_PATH)
@@ -90,3 +90,23 @@ def delete_preset(preset_id):
 
 # Initialize database on module load
 init_db()
+
+
+# Folder templates use the validated IngestTemplate schema, separate from render presets.
+def save_folder_template(template):
+    with get_db_connection() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS folder_templates (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        conn.execute("INSERT OR REPLACE INTO folder_templates VALUES (?, ?)", (template.id, template.to_json()))
+
+
+def get_folder_templates():
+    import json
+    with get_db_connection() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS folder_templates (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        return [json.loads(row[0]) for row in conn.execute("SELECT data FROM folder_templates ORDER BY id")]
+
+
+def delete_folder_template(template_id):
+    with get_db_connection() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS folder_templates (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        return conn.execute("DELETE FROM folder_templates WHERE id = ?", (template_id,)).rowcount > 0

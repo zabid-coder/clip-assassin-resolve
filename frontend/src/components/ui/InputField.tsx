@@ -27,7 +27,7 @@ export const InputField: React.FC<InputFieldProps> = ({ id, placeholder, default
         const inputEl = document.getElementById(id) as HTMLInputElement;
         if (inputEl) {
           inputEl.value = data.path;
-          localStorage.setItem(id, data.path);
+          localStorage.setItem(`clipAssassin:${id}`,  data.path);
         }
       }
     } catch (err) {
@@ -40,14 +40,17 @@ export const InputField: React.FC<InputFieldProps> = ({ id, placeholder, default
   const ringStyle = INPUT_STYLES.focusRing(category);
 
   return (
-    <div className="relative w-full">
+    <div className="form-field">
+      <label htmlFor={id} className="block text-xs text-white/60 mb-2">{placeholder}</label>
+      <div className={`field-control ${browseType?'with-browse':''}`}>
       <input 
         id={id}
+        aria-label={placeholder}
         type={type} 
         placeholder={placeholder}
-        defaultValue={localStorage.getItem(id) || defaultValue}
-        onChange={(e) => localStorage.setItem(id, e.target.value)}
-        className={`${INPUT_STYLES.base} ${browseType ? 'pr-12' : ''} ${className}`}
+        defaultValue={localStorage.getItem(`clipAssassin:${id}`) || defaultValue}
+        onChange={(e) => localStorage.setItem(`clipAssassin:${id}`,  e.target.value)}
+        className={`${INPUT_STYLES.base} ${browseType ? 'browse-value' : ''} ${className}`}
         style={ringStyle}
       />
       {browseType && (
@@ -55,7 +58,8 @@ export const InputField: React.FC<InputFieldProps> = ({ id, placeholder, default
           type="button"
           onClick={handleBrowse}
           disabled={loading}
-          className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-white/50 hover:text-brand-primary hover:bg-brand-primary/10 transition-colors ${loading ? 'animate-pulse opacity-50 cursor-wait' : ''}`}
+          aria-label={`Browse for ${browseType}`}
+          className={`field-browse ${loading?'is-loading':''}`}
           title={`Browse for ${browseType}`}
         >
           {browseType === 'folder' ? <FolderSearch size={16} /> : 
@@ -63,6 +67,7 @@ export const InputField: React.FC<InputFieldProps> = ({ id, placeholder, default
            <Save size={16} />}
         </button>
       )}
+      </div>
     </div>
   );
 };

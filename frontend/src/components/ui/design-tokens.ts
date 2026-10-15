@@ -76,26 +76,26 @@ export const CATEGORY_COLORS: Record<CategoryKey, { name: string; solid: string;
 export const BUTTON_VARIANTS = {
   primary: (categoryKey: CategoryKey = 'magic') => {
     // Standardized minimal brand execution fill
-    const isDestructive = categoryKey === 'destructive';
-    const bg = isDestructive ? '#F43F5E' : '#A855F7';
-    const glow = isDestructive ? 'rgba(244, 63, 94, 0.3)' : 'rgba(168, 85, 247, 0.3)';
+    void categoryKey;
+    const bg = 'var(--app-primary)';
+    const glow = 'transparent';
     return {
-      className: 'font-semibold rounded-xl px-5 py-2.5 text-xs transition-all duration-200 hover:brightness-110 active:scale-[0.98] flex items-center justify-center gap-2 shadow-lg cursor-pointer',
+      className: 'font-semibold rounded-lg px-5 py-3 text-xs transition-all duration-200 hover:brightness-110 active:scale-[0.98] flex items-center justify-center gap-2 shadow-lg cursor-pointer',
       style: {
         backgroundColor: bg,
         boxShadow: `0 0 20px ${glow}`,
-        color: '#FFFFFF',
+        color: '#14121d',
       },
     };
   },
 
   secondary: {
-    className: 'font-semibold rounded-xl px-5 py-2.5 text-xs transition-all duration-200 bg-white/10 hover:bg-white/15 active:scale-[0.98] border border-white/10 text-white/90 flex items-center justify-center gap-2 cursor-pointer',
+    className: 'font-semibold rounded-lg px-5 py-3 text-xs transition-all duration-200 bg-white/10 hover:bg-white/15 active:scale-[0.98] border border-white/10 text-white/90 flex items-center justify-center gap-2 cursor-pointer',
     style: {},
   },
   
   destructive: {
-    className: 'font-semibold rounded-xl px-5 py-2.5 text-xs transition-all duration-200 bg-rose-500/90 hover:bg-rose-500 active:scale-[0.98] text-white flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-rose-500/20',
+    className: 'font-semibold rounded-lg px-5 py-3 text-xs transition-all duration-200 bg-rose-500/90 hover:bg-rose-500 active:scale-[0.98] text-white flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-rose-500/20',
     style: {},
   }
 };
@@ -104,7 +104,7 @@ export const BUTTON_VARIANTS = {
 // 3. CARD LAYOUT
 // -----------------------------------------------------------------------
 export const CARD_STYLES = {
-  base: 'rounded-[24px] p-6 bg-[#0F1712] border border-white/5 transition-all duration-300 ease-out hover:border-white/10 hover:bg-black/40 hover:-translate-y-1 hover:shadow-2xl flex flex-col relative group',
+  base: 'rounded-[24px] p-6 bg-[#191c23] border border-white/5 transition-all duration-300 ease-out hover:border-white/10 hover:bg-black/40 hover:-translate-y-1 hover:shadow-2xl flex flex-col relative group',
   minHeight: 'min-h-[180px]',
   gap: 'gap-6',
   iconWrapper: (categoryKey: CategoryKey) => ({
@@ -117,7 +117,7 @@ export const CARD_STYLES = {
 // 4. INPUT FIELDS
 // -----------------------------------------------------------------------
 export const INPUT_STYLES = {
-  base: 'w-full rounded-lg px-4 py-3 bg-[#1A241E] border border-white/10 placeholder:text-gray-500 text-gray-100 transition-colors duration-150 focus:outline-none focus:border-opacity-100 focus:ring-1',
+  base: 'w-full rounded-lg px-4 py-3 bg-[#13161d] border border-white/10 placeholder:text-gray-500 text-gray-100 transition-colors duration-150 focus:outline-none focus:border-opacity-100 focus:ring-1',
   focusRing: (categoryKey: CategoryKey) => ({
     '--tw-ring-color': CATEGORY_COLORS[categoryKey].solid,
   } as React.CSSProperties),

@@ -1,0 +1,49 @@
+NeoFX Core Pack – v2.0 Update
+
+The biggest Core Pack update yet, 7 brand new effects and a restructured pack.
+
+What's new:
+
+Neo Shatter (Fuse)
+- Explode text and graphics into customizable fragments
+- Full control over fragmentation, direction, and animation
+
+Neo Bevel (Macro)
+- 3D beveled edges with adjustable highlights and shadows
+- Works on text, shapes, and graphics
+
+Neo Chroma (Fuse)
+- Chromatic aberration with RGB channel splitting
+- Adjustable intensity and angle for cinematic looks
+
+Neo Lens Distort (Fuse)
+- Barrel and pincushion lens distortion
+- Adds real camera energy to motion graphics
+
+Neo Glitch (Fuse)
+- Scan lines, color shift, and block displacement
+- Fully animated with customizable parameters
+
+Neo Tri-Tone (Fuse)
+- Map three custom colors to shadows, midtones, and highlights
+- Instant stylized color grading
+
+Neo Long Shadow (Fuse)
+- Extended directional shadows with color and angle control
+- Perfect for bold, graphic text styles
+
+Changes:
+
+- Pack now contains 15 effects: 9 Macros + 6 Fuses
+- Macros (9): available as both DRFX (Edit Page) and .setting files (Fusion Page)
+- Fuses (6): available in the Fusion Page only, installed to your Fuses folder
+
+Full effect list:
+
+Macros: Neo Light Sweep Pro, Neo Glow Pro, Neo Reflection, Neo Halftone, Neo Inner Glow, Neo Emboss, Neo Inner Shadow, Neo Paper Curl, Neo Bevel
+Fuses: Neo Shatter, Neo Chroma, Neo Lens Distort, Neo Glitch, Neo Tri-Tone, Neo Long Shadow
+
+Questions or issues? Reach out to us at:
+contact@neoeditfx.com
+
+Thanks for your support 💙

@@ -14,7 +14,7 @@ def create_snapshot(core):
 
         original_name = timeline.GetName()
         timestamp = time.strftime("%H%M%S")
-        snapshot_name = f"Backup - {original_name} - {timestamp}"
+        snapshot_name = core.unique_timeline_name(f"Backup - {original_name} - {timestamp}")
 
         # DaVinci Resolve API: DuplicateTimeline creates an exact copy
         new_timeline = timeline.DuplicateTimeline(snapshot_name)
@@ -75,9 +75,7 @@ def batch_rename_clips(core, prefix, start_number=1, scope="timeline"):
                 return False, "No clips found on Video Track 1."
 
             for item in items:
-                mpi = item.GetMediaPoolItem()
-                if mpi:
-                    clips_to_rename.append(mpi)
+                clips_to_rename.append(item)
 
         if not clips_to_rename:
             return False, "No clips found to rename."
@@ -97,10 +95,11 @@ def batch_rename_clips(core, prefix, start_number=1, scope="timeline"):
             if "." in old_name:
                 ext = "." + old_name.rsplit(".", 1)[-1]
             
-            clip.SetClipProperty("Clip Name", f"{new_name}{ext}")
-            renamed += 1
+            setter = getattr(clip, "SetName", None)
+            ok = setter(f"{new_name}{ext}") if setter else clip.SetClipProperty("Clip Name", f"{new_name}{ext}")
+            if ok: renamed += 1
 
-        return True, f"✓ Renamed {renamed} clips: {prefix}_001 → {prefix}_{str(start_number + renamed - 1).zfill(pad_width)}"
+        return renamed == total, f"Renamed {renamed}/{total} clips starting at {prefix}_{str(start_number).zfill(pad_width)}."
 
     except Exception as e:
         return False, f"Error renaming clips: {str(e)}"
@@ -184,7 +183,7 @@ def get_project_stats(core):
             "total_clips_used": total_clips_used,
             "total_pool_clips": total_pool_clips,
             "total_bins": total_bins,
-            "total_duration_seconds": round(total_duration_frames / avg_fps, 1),
+            "total_duration_seconds": round(sum(t["duration_seconds"] for t in timelines_info), 1),
             "timelines": timelines_info
         }
 

@@ -1,0 +1,10 @@
+Update – File Structure Cleanup
+
+This update removes macOS metadata files (._ and __MACOSX) from the download package to improve compatibility with Windows.
+
+All presets now import correctly in DaVinci Resolve on both macOS and Windows.
+If you had missing or broken presets before, please re-download the pack.
+
+No changes were made to the actual effects - this is a packaging fix.
+
+- Victor

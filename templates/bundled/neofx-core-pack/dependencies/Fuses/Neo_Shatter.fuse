@@ -1,0 +1,534 @@
+--[[--
+Neo Shatter Fuse
+GPU-accelerated image shatter effect for DaVinci Resolve / Fusion
+--]]--
+
+FuRegisterClass("Neo_Shatter", CT_Tool, {
+    REGS_Name = "Neo Shatter",
+    REGS_Category = "Fuses\\Effect",
+    REGS_OpIconString = "NSh",
+    REGS_OpDescription = "GPU-accelerated Voronoi shatter effect",
+    REGS_IconID = "Icons.Tools.Icons.Grain",
+    REG_TimeVariant = false,
+    REG_NoObjMatCtrls = true,
+})
+
+NeoShatterParams = [[
+    int imgSize[2];
+    float center[2];
+    int numCells;
+    float displace;
+    float rotStrength;
+    float seed;
+    int patternType;
+    float fade;
+    float scaleDown;
+]]
+
+NeoShatterSource = [[
+
+#define tex _tex2DVecN
+
+#define PAT_GLASS     0
+#define PAT_GRID      1
+#define PAT_BRICKS    2
+#define PAT_HEXAGONS  3
+#define PAT_TRIANGLES 4
+
+__DEVICE__ float neoHash(float n) {
+    float x = _sinf(n) * 43758.5453f;
+    return x - _floor(x);
+}
+
+__DEVICE__ float2 neoHash2(float n) {
+    float2 r;
+    r.x = neoHash(n);
+    r.y = neoHash(n + 1.0f);
+    return r;
+}
+
+__DEVICE__ int gridCellCenter(int patType, int row, int col,
+    int cols, int rows, float cellW, float cellH,
+    float *outX, float *outY)
+{
+    if (patType == PAT_GRID) {
+        *outX = ((float)col + 0.5f) * cellW;
+        *outY = ((float)row + 0.5f) * cellH;
+        return row * cols + col;
+    }
+    else if (patType == PAT_BRICKS) {
+        float rowOff = (row % 2 == 1) ? cellW * 0.5f : 0.0f;
+        *outX = ((float)col + 0.5f) * cellW + rowOff;
+        *outY = ((float)row + 0.5f) * cellH;
+        return row * cols + col;
+    }
+    else if (patType == PAT_HEXAGONS) {
+        float rowH = cellH * 0.75f;
+        float rowOff = (row % 2 == 1) ? cellW * 0.5f : 0.0f;
+        *outX = ((float)col + 0.5f) * cellW + rowOff;
+        *outY = ((float)row + 0.5f) * rowH;
+        return row * cols + col + 10000;
+    }
+    else {
+        float triHalfW = cellW * 0.5f;
+        int isDown = (col + row) % 2;
+        *outX = ((float)col + 1.0f) * triHalfW;
+        if (isDown == 0)
+            *outY = ((float)row + 0.333f) * cellH;
+        else
+            *outY = ((float)row + 0.667f) * cellH;
+        return row * cols * 2 + col + 20000;
+    }
+}
+
+__DEVICE__ void findNearestGridCell(int patType, float gu, float gv,
+    int cols, int rows, float cellW, float cellH,
+    float centerX, float centerY, float displace,
+    float *origCX, float *origCY, float *dispCX, float *dispCY, int *bestIdx)
+{
+    int baseRow, baseCol;
+    int searchR = 3 + (int)(displace * 3.0f);
+    if (searchR > 12) searchR = 12;
+
+    if (patType == PAT_HEXAGONS) {
+        float rowH = cellH * 0.75f;
+        baseRow = (int)(gv / rowH);
+        float offU = (baseRow % 2 == 1) ? cellW * 0.5f : 0.0f;
+        baseCol = (int)((gu - offU) / cellW);
+    } else if (patType == PAT_BRICKS) {
+        baseRow = (int)(gv / cellH);
+        float offU = (baseRow % 2 == 1) ? cellW * 0.5f : 0.0f;
+        baseCol = (int)((gu - offU) / cellW);
+    } else if (patType == PAT_TRIANGLES) {
+        baseRow = (int)(gv / cellH);
+        baseCol = (int)(gu / (cellW * 0.5f));
+    } else {
+        baseRow = (int)(gv / cellH);
+        baseCol = (int)(gu / cellW);
+    }
+
+    float minDist = 1e10f;
+    int maxRow = (patType == PAT_HEXAGONS) ? rows * 2 : rows;
+    int maxCol = (patType == PAT_TRIANGLES) ? cols * 2 : cols;
+
+    for (int dr = -searchR; dr <= searchR; dr++) {
+        for (int dc = -searchR; dc <= searchR; dc++) {
+            int r2 = baseRow + dr;
+            int c2 = baseCol + dc;
+            if (r2 < 0 || r2 >= maxRow || c2 < 0 || c2 >= maxCol) continue;
+
+            float cpx, cpy;
+            int idx = gridCellCenter(patType, r2, c2, cols, rows, cellW, cellH, &cpx, &cpy);
+
+            float dx = cpx - centerX;
+            float dy = cpy - centerY;
+            float dpx = cpx + dx * displace;
+            float dpy = cpy + dy * displace;
+
+            float ex = gu - dpx;
+            float ey = gv - dpy;
+            float d = ex * ex + ey * ey;
+            if (d < minDist) {
+                minDist = d;
+                *origCX = cpx; *origCY = cpy;
+                *dispCX = dpx; *dispCY = dpy;
+                *bestIdx = idx;
+            }
+        }
+    }
+}
+
+__DEVICE__ int validateGridCell(int patType, float srcU, float srcV,
+    int expectedIdx, int cols, int rows, float cellW, float cellH)
+{
+    int baseRow, baseCol;
+    int searchR = 3;
+
+    if (patType == PAT_HEXAGONS) {
+        float rowH = cellH * 0.75f;
+        baseRow = (int)(srcV / rowH);
+        float offU = (baseRow % 2 == 1) ? cellW * 0.5f : 0.0f;
+        baseCol = (int)((srcU - offU) / cellW);
+    } else if (patType == PAT_BRICKS) {
+        baseRow = (int)(srcV / cellH);
+        float offU = (baseRow % 2 == 1) ? cellW * 0.5f : 0.0f;
+        baseCol = (int)((srcU - offU) / cellW);
+    } else if (patType == PAT_TRIANGLES) {
+        baseRow = (int)(srcV / cellH);
+        baseCol = (int)(srcU / (cellW * 0.5f));
+    } else {
+        baseRow = (int)(srcV / cellH);
+        baseCol = (int)(srcU / cellW);
+    }
+
+    float minDist = 1e10f;
+    int closestIdx = -1;
+    int maxRow = (patType == PAT_HEXAGONS) ? rows * 2 : rows;
+    int maxCol = (patType == PAT_TRIANGLES) ? cols * 2 : cols;
+
+    for (int dr = -searchR; dr <= searchR; dr++) {
+        for (int dc = -searchR; dc <= searchR; dc++) {
+            int r2 = baseRow + dr;
+            int c2 = baseCol + dc;
+            if (r2 < 0 || r2 >= maxRow || c2 < 0 || c2 >= maxCol) continue;
+
+            float cpx, cpy;
+            int idx = gridCellCenter(patType, r2, c2, cols, rows, cellW, cellH, &cpx, &cpy);
+
+            float ex = srcU - cpx;
+            float ey = srcV - cpy;
+            float d = ex * ex + ey * ey;
+            if (d < minDist) {
+                minDist = d;
+                closestIdx = idx;
+            }
+        }
+    }
+    return (closestIdx == expectedIdx) ? 1 : 0;
+}
+
+
+__KERNEL__ void NeoShatterKernel(
+    __CONSTANTREF__ NeoShatterParams *params,
+    __TEXTURE2D__ inimg,
+    __TEXTURE2D_WRITE__ outimg)
+{
+    DEFINE_KERNEL_ITERATORS_XY(x, y);
+    if (x < params->imgSize[0] && y < params->imgSize[1])
+    {
+        float width  = (float)params->imgSize[0];
+        float height = (float)params->imgSize[1];
+        float u = ((float)x + 0.5f) / width;
+        float v = ((float)y + 0.5f) / height;
+
+        int   numCells    = params->numCells;
+        float displace    = params->displace;
+        float rotStrength = params->rotStrength;
+        float seed        = params->seed;
+        float centerX     = params->center[0];
+        float centerY     = params->center[1];
+        int   patternType = params->patternType;
+        float fade        = params->fade;
+        float scaleDown   = params->scaleDown;
+
+        float origCX = 0.5f, origCY = 0.5f;
+        float dispCX = 0.5f, dispCY = 0.5f;
+        int nearestIdx = 0;
+        int valid = 1;
+
+        int cols = (int)(_sqrtf((float)numCells) + 0.5f);
+        if (cols < 1) cols = 1;
+        int rows = (numCells + cols - 1) / cols;
+        if (rows < 1) rows = 1;
+        float cellW = 1.0f / (float)cols;
+        float cellH = 1.0f / (float)rows;
+
+        // ---- Find nearest cell in displaced space ----
+        if (patternType == PAT_GLASS) {
+            float minDist = 1e10f;
+            for (int i = 0; i < numCells; i++) {
+                float seedF = seed * 137.0f + (float)i * 57.0f;
+                float2 cp = neoHash2(seedF);
+                float dx = cp.x - centerX;
+                float dy = cp.y - centerY;
+                float dpx = cp.x + dx * displace;
+                float dpy = cp.y + dy * displace;
+                float ex = u - dpx;
+                float ey = v - dpy;
+                float d = ex * ex + ey * ey;
+                if (d < minDist) {
+                    minDist = d;
+                    origCX = cp.x; origCY = cp.y;
+                    dispCX = dpx;  dispCY = dpy;
+                    nearestIdx = i;
+                }
+            }
+        } else {
+            findNearestGridCell(patternType, u, v,
+                cols, rows, cellW, cellH,
+                centerX, centerY, displace,
+                &origCX, &origCY, &dispCX, &dispCY, &nearestIdx);
+        }
+
+        // ---- Rotation ----
+        float cellSeed = neoHash((float)nearestIdx * 73.0f + seed * 31.0f);
+        float rotSign = (cellSeed > 0.5f) ? 1.0f : -1.0f;
+        float angle = rotStrength * displace * rotSign * (0.5f + cellSeed);
+        float cosA = _cosf(angle);
+        float sinA = _sinf(angle);
+
+        // ---- Reverse-transform (with scale) ----
+        float offX = dispCX - origCX;
+        float offY = dispCY - origCY;
+        float flyDist = _sqrtf(offX * offX + offY * offY);
+
+        // Scale: fragments shrink as they fly (1.0 = no shrink at displace 0)
+        float scale = 1.0f + scaleDown * flyDist;
+        if (scale < 0.01f) scale = 0.01f;
+
+        float lu = u - dispCX;
+        float lv = v - dispCY;
+        // Inverse scale (enlarge local coords to reverse the shrink)
+        lu *= scale;
+        lv *= scale;
+        float ru =  lu * cosA + lv * sinA;
+        float rv = -lu * sinA + lv * cosA;
+        float srcU = ru + origCX;
+        float srcV = rv + origCY;
+
+        // ---- Validate ----
+        if (patternType == PAT_GLASS) {
+            float myDist2 = (srcU - origCX) * (srcU - origCX)
+                          + (srcV - origCY) * (srcV - origCY);
+            for (int i = 0; i < numCells; i++) {
+                if (i == nearestIdx) continue;
+                float seedF = seed * 137.0f + (float)i * 57.0f;
+                float2 cp = neoHash2(seedF);
+                float d2 = (srcU - cp.x) * (srcU - cp.x)
+                          + (srcV - cp.y) * (srcV - cp.y);
+                if (d2 < myDist2) { valid = 0; break; }
+            }
+        } else {
+            valid = validateGridCell(patternType, srcU, srcV,
+                nearestIdx, cols, rows, cellW, cellH);
+        }
+
+        // ---- Output ----
+        float4 outColor;
+        if (valid == 1 &&
+            srcU >= 0.0f && srcU <= 1.0f &&
+            srcV >= 0.0f && srcV <= 1.0f)
+        {
+            outColor = tex(inimg, srcU, srcV, 15);
+
+            // Fade: fragments become transparent as they fly
+            float fadeAlpha = 1.0f - flyDist * fade;
+            if (fadeAlpha < 0.0f) fadeAlpha = 0.0f;
+            outColor.x *= fadeAlpha;
+            outColor.y *= fadeAlpha;
+            outColor.z *= fadeAlpha;
+            outColor.w *= fadeAlpha;
+        } else {
+            outColor.x = 0.0f;
+            outColor.y = 0.0f;
+            outColor.z = 0.0f;
+            outColor.w = 0.0f;
+        }
+
+        _tex2DVec4Write(outimg, x, y, outColor);
+    }
+}
+]]
+
+function Create()
+    InImage = self:AddInput("Image", "Image", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    InPattern = self:AddInput("Pattern", "Pattern", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0,
+        INP_Integer = true,
+        { CCS_AddString = "Glass" },
+        { CCS_AddString = "Grid" },
+        { CCS_AddString = "Bricks" },
+        { CCS_AddString = "Hexagons" },
+        { CCS_AddString = "Triangles" },
+    })
+
+    InShatterCount = self:AddInput("Shatter Count", "ShatterCount", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 100,
+        INP_Integer = true,
+        INP_MinAllowed = 3,
+        INP_MaxAllowed = 500,
+        INP_MinScale = 3,
+        INP_MaxScale = 500,
+    })
+
+    InDisplace = self:AddInput("Shatter Displace", "ShatterDisplace", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.5,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 2.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 2.0,
+    })
+
+    InRotation = self:AddInput("Shatter Rotation", "ShatterRotation", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 10.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 10.0,
+    })
+
+    InFade = self:AddInput("Fade", "Fade", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 5.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 3.0,
+    })
+
+    InScale = self:AddInput("Scale Down", "ScaleDown", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 10.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 5.0,
+    })
+
+    InSeed = self:AddInput("Random Seed", "RandomSeed", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0,
+        INP_Integer = true,
+        INP_MinAllowed = 0,
+        INP_MaxAllowed = 32767,
+        INP_MinScale = 0,
+        INP_MaxScale = 32767,
+    })
+
+    InReseed = self:AddInput("Reseed", "Reseed", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_DoNotifyChanged = true,
+        INP_External = false,
+    })
+
+    InCenter = self:AddInput("Center", "Center", {
+        LINKID_DataType = "Point",
+        INPID_InputControl = "OffsetControl",
+        INPID_PreviewControl = "CrosshairControl",
+        INP_DefaultX = 0.5,
+        INP_DefaultY = 0.5,
+    })
+
+    -- Tutorial page
+    self:AddInput("Tutorial", "TutorialButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 1,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://youtu.be/7FO2vAIW1EY"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Tutorial",
+    })
+
+    self:AddInput("Latest Version", "LatestVersionButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://drive.google.com/drive/folders/1T6aAJCU4FxQXYZo-I3GgRDarj0kftmP-?usp=sharing"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Latest Version",
+    })
+
+    self:AddInput("Contact Us", "ContactUsButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://neoeditfx.com/pages/contact"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Contact Us",
+    })
+
+    self:AddInput("Fuse by NeoEdit", "CreatedByNeoEdit", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "LabelControl",
+        INP_Integer = true,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        INP_Default = 1,
+        INP_External = false,
+        INP_Passive = true,
+        ICS_ControlPage = "Tutorial",
+        LBLC_DropDownButton = false,
+        LBLC_NumInputs = 0,
+        LINKS_Name = "Fuse by NeoEdit",
+    })
+
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function NotifyChanged(inp, param, time)
+    if inp == InReseed then
+        InSeed:SetSource(Number(math.random(0, 32767)), time)
+    end
+end
+
+function Process(req)
+    local inimg = InImage:GetValue(req)
+    if not inimg then
+        OutImage:Set(req, nil)
+        return
+    end
+
+    local patternType  = InPattern:GetValue(req).Value
+    local shatterCount = InShatterCount:GetValue(req).Value
+    local displace     = InDisplace:GetValue(req).Value
+    local rotation     = InRotation:GetValue(req).Value
+    local fade         = InFade:GetValue(req).Value
+    local scaleDown    = InScale:GetValue(req).Value
+    local seed         = InSeed:GetValue(req).Value
+    local center       = InCenter:GetValue(req)
+
+    local out = Image({IMG_Like = inimg, IMG_DeferAlloc = true})
+
+    local node = DVIPComputeNode(req, "NeoShatterKernel", NeoShatterSource, "NeoShatterParams", NeoShatterParams)
+
+    local params = node:GetParamBlock(NeoShatterParams)
+    params.imgSize     = {inimg.DataWindow:Width(), inimg.DataWindow:Height()}
+    params.center      = {center.X, center.Y}
+    params.numCells    = math.floor(shatterCount)
+    params.displace    = displace
+    params.rotStrength = rotation
+    params.seed        = seed
+    params.patternType = math.floor(patternType)
+    params.fade        = fade
+    params.scaleDown   = scaleDown
+
+    node:SetParamBlock(params)
+    node:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_TRUE)
+    node:AddInput("inimg", inimg)
+    node:AddOutput("outimg", out)
+
+    local ok = node:RunSession(req)
+
+    if not ok then
+        out = Image({IMG_Like = inimg})
+        out:Fill(Pixel({R = 0, G = 0, B = 0, A = 0}))
+    end
+
+    OutImage:Set(req, out)
+end

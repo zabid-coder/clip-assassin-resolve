@@ -1,0 +1,257 @@
+--[[--
+Neo LensDistort Fuse
+GPU-accelerated lens distortion for DaVinci Resolve / Fusion
+Barrel/pincushion distortion with chromatic aberration and undistort support
+--]]--
+
+FuRegisterClass("Neo_LensDistort", CT_Tool, {
+    REGS_Name = "Neo LensDistort",
+    REGS_Category = "Fuses\\Effect",
+    REGS_OpIconString = "NLd",
+    REGS_OpDescription = "GPU-accelerated lens distortion with chromatic aberration",
+    REGS_IconID = "Icons.Tools.Icons.LensDistort",
+    REG_TimeVariant = false,
+    REG_NoObjMatCtrls = true,
+})
+
+NeoLensDistortParams = [[
+    int imgSize[2];
+    float amount;
+    float centerX;
+    float centerY;
+    float squeeze;
+    float caAmount;
+]]
+
+NeoLensDistortSource = [[
+
+#define tex _tex2DVecN
+
+// Compute distorted sample UV for a single channel
+// Radial distortion: r' = r * (1 + k*r^2)
+// Positive k = barrel (distort), negative k = pincushion (undistort)
+__DEVICE__ void sampleUV(float u, float v, float cx, float cy, float sq,
+                         float k, float *outU, float *outV)
+{
+    float dx = (u - cx) * sq;
+    float dy = v - cy;
+    float r2 = dx * dx + dy * dy;
+
+    float scale = 1.0f + k * r2;
+    *outU = cx + dx * scale / sq;
+    *outV = cy + dy * scale;
+}
+
+__KERNEL__ void NeoLensDistortKernel(
+    __CONSTANTREF__ NeoLensDistortParams *params,
+    __TEXTURE2D__ inimg,
+    __TEXTURE2D_WRITE__ outimg)
+{
+    DEFINE_KERNEL_ITERATORS_XY(x, y);
+    if (x < params->imgSize[0] && y < params->imgSize[1])
+    {
+        float width  = (float)params->imgSize[0];
+        float height = (float)params->imgSize[1];
+        float u = ((float)x + 0.5f) / width;
+        float v = ((float)y + 0.5f) / height;
+
+        float k  = params->amount;
+        float cx = params->centerX;
+        float cy = params->centerY;
+        float sq = params->squeeze;
+        float ca = params->caAmount;
+
+        if (ca > 1e-6f)
+        {
+            // Chromatic aberration: offset amount per channel
+            // R gets less distortion, G is neutral, B gets more
+            float kR = k * (1.0f - ca);
+            float kB = k * (1.0f + ca);
+
+            float uR, vR, uG, vG, uB, vB;
+            sampleUV(u, v, cx, cy, sq, kR, &uR, &vR);
+            sampleUV(u, v, cx, cy, sq, k,  &uG, &vG);
+            sampleUV(u, v, cx, cy, sq, kB, &uB, &vB);
+
+            float4 sR = tex(inimg, uR, vR, 15);
+            float4 sG = tex(inimg, uG, vG, 15);
+            float4 sB = tex(inimg, uB, vB, 15);
+
+            float4 outColor;
+            outColor.x = sR.x;
+            outColor.y = sG.y;
+            outColor.z = sB.z;
+            outColor.w = sG.w;
+
+            _tex2DVec4Write(outimg, x, y, outColor);
+        }
+        else
+        {
+            // No chromatic aberration: single sample
+            float su, sv;
+            sampleUV(u, v, cx, cy, sq, k, &su, &sv);
+
+            float4 s = tex(inimg, su, sv, 15);
+            _tex2DVec4Write(outimg, x, y, s);
+        }
+    }
+}
+]]
+
+-- ==================== UI ====================
+function Create()
+    InImage = self:AddInput("Image", "Image", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Controls nest (open by default)
+    self:BeginControlNest("Controls", "Controls", true)
+
+    InAmount = self:AddInput("Amount", "Amount", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinAllowed = -2.0,
+        INP_MaxAllowed = 2.0,
+        INP_MinScale = -0.5,
+        INP_MaxScale = 0.5,
+    })
+
+    InCenter = self:AddInput("Center", "Center", {
+        LINKID_DataType = "Point",
+        INPID_InputControl = "OffsetControl",
+        INPID_PreviewControl = "CrosshairControl",
+        INP_DefaultX = 0.5,
+        INP_DefaultY = 0.5,
+    })
+
+    InSqueeze = self:AddInput("Squeeze", "Squeeze", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinAllowed = 0.5,
+        INP_MaxAllowed = 2.0,
+        INP_MinScale = 0.5,
+        INP_MaxScale = 2.0,
+    })
+
+    self:EndControlNest()
+
+    -- Chromatic Aberration nest (closed by default)
+    self:BeginControlNest("Chromatic Aberration", "ChromaticAberration", false)
+
+    InCAAmount = self:AddInput("CA Amount", "CAAmount", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 0.2,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 0.2,
+    })
+
+    self:EndControlNest()
+
+    -- Tutorial page
+    self:AddInput("Tutorial", "TutorialButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 1,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://youtu.be/SjScLLmGdxU"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Tutorial",
+    })
+
+    self:AddInput("Latest Version", "LatestVersionButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://drive.google.com/drive/folders/1T6aAJCU4FxQXYZo-I3GgRDarj0kftmP-?usp=sharing"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Latest Version",
+    })
+
+    self:AddInput("Contact Us", "ContactUsButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://neoeditfx.com/pages/contact"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Contact Us",
+    })
+
+    self:AddInput("Fuse by NeoEdit", "CreatedByNeoEdit", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "LabelControl",
+        INP_Integer = true,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        INP_Default = 1,
+        INP_External = false,
+        INP_Passive = true,
+        ICS_ControlPage = "Tutorial",
+        LBLC_DropDownButton = false,
+        LBLC_NumInputs = 0,
+        LINKS_Name = "Fuse by NeoEdit",
+    })
+
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+-- ==================== PROCESS ====================
+function Process(req)
+    local inimg = InImage:GetValue(req)
+    if not inimg then
+        OutImage:Set(req, nil)
+        return
+    end
+
+    local out = Image({IMG_Like = inimg, IMG_DeferAlloc = true})
+
+    local node = DVIPComputeNode(req, "NeoLensDistortKernel", NeoLensDistortSource, "NeoLensDistortParams", NeoLensDistortParams)
+
+    local center = InCenter:GetValue(req)
+
+    local params = node:GetParamBlock(NeoLensDistortParams)
+    params.imgSize  = {inimg.DataWindow:Width(), inimg.DataWindow:Height()}
+    params.amount   = InAmount:GetValue(req).Value
+    params.centerX  = center.X
+    params.centerY  = center.Y
+    params.squeeze  = InSqueeze:GetValue(req).Value
+    params.caAmount = InCAAmount:GetValue(req).Value
+
+    node:SetParamBlock(params)
+    node:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_TRUE)
+    node:AddInput("inimg", inimg)
+    node:AddOutput("outimg", out)
+
+    local ok = node:RunSession(req)
+
+    if not ok then
+        out = Image({IMG_Like = inimg})
+        out:Fill(Pixel({R = 0, G = 0, B = 0, A = 0}))
+    end
+
+    OutImage:Set(req, out)
+end

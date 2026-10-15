@@ -48,6 +48,7 @@ class ResolveConnection:
         self.project = None
         self.media_pool = None
         self.project_manager = None
+        self.connection_message = "Not connected"
 
     def is_resolve_process_running(self):
         try:
@@ -82,6 +83,7 @@ class ResolveConnection:
         Returns:
             tuple: (success: bool, message: str)
         """
+        self.resolve = self.project = self.media_pool = self.project_manager = None
         try:
             # Import DaVinci Resolve script module
             try:
@@ -92,21 +94,9 @@ class ResolveConnection:
             # Get Resolve instance
             self.resolve = dvr.scriptapp("Resolve")
             if not self.resolve:
-                if not self.is_resolve_process_running():
-                    return False, "DaVinci Resolve is not open. Please launch DaVinci Resolve first."
-                elif not self.is_fuscript_running():
-                    return False, "DaVinci Resolve is open, but its Scripting Server (fuscript) is not running.\n\n👉 Easy 1-Step Fix:\n1. Quit DaVinci Resolve completely (Cmd + Q).\n2. Re-open DaVinci Resolve.\n3. Open any Project and click Connect again."
-                else:
-                    # Inspect host interactive state via ScriptServer
-                    try:
-                        server = dvr.scriptapp("")
-                        if server:
-                            host = server.FindHost("Resolve")
-                            if host and host.get("Priorities", {}).get("Interactive", 0.0) == 0.0:
-                                return False, "DaVinci Resolve is open, but no Project is loaded (or a modal dialog is open).\n\n👉 Quick 1-Step Fix:\nDouble-click and open any Project inside DaVinci Resolve so your timeline is visible, then click Connect again."
-                    except Exception:
-                        pass
-                    return False, "DaVinci Resolve Scripting Server is active, but access is blocked by an open dialog window inside Resolve.\n\n👉 Quick Fix:\n1. Close any open dialogs/modal windows (Preferences, About, Project Settings) inside Resolve.\n2. Click Connect again."
+                return False, ("Cannot reach DaVinci Resolve. Open Resolve Studio and enable "
+                    "Preferences > System > General > External scripting using: Local. "
+                    "Close open dialogs, then reconnect.")
 
             # Get project manager
             self.project_manager = self.resolve.GetProjectManager()
@@ -117,13 +107,42 @@ class ResolveConnection:
             self.project = self.project_manager.GetCurrentProject()
             if self.project:
                 self.media_pool = self.project.GetMediaPool()
-                return True, f"Connected to project: {self.project.GetName()}"
+                self.connection_message = f"Connected to project: {self.project.GetName()}"
+                return True, self.connection_message
             else:
                 self.media_pool = None
-                return True, "Connected to DaVinci Resolve (Project Manager ready)"
+                self.connection_message = "Connected to DaVinci Resolve (Project Manager ready)"
+                return True, self.connection_message
 
         except Exception as e:
             return False, f"Connection error: {str(e)}"
+
+    def refresh(self):
+        """Refresh live project references, including after a project switch or closure."""
+        if not self.resolve:
+            success, self.connection_message = self.connect()
+            return success
+        try:
+            manager = self.resolve.GetProjectManager()
+            if not manager:
+                raise RuntimeError("Resolve is unavailable")
+            self.project_manager = manager
+            self.project = manager.GetCurrentProject()
+            self.media_pool = self.project.GetMediaPool() if self.project else None
+            self.connection_message = (f"Connected to project: {self.project.GetName()}" if self.project
+                                       else "Connected to DaVinci Resolve (Project Manager ready)")
+            return True
+        except Exception:
+            self.resolve = self.project = self.media_pool = self.project_manager = None
+            self.connection_message = "Resolve disconnected. Open Resolve and reconnect."
+            return False
+
+    def unique_timeline_name(self, base):
+        name, count = base, 2
+        while self._timeline_exists(name):
+            name = f"{base} ({count})"
+            count += 1
+        return name
 
     def get_selected_clip(self):
         """Get the currently selected clip in Media Pool, if any"""
@@ -377,7 +396,7 @@ class ResolveConnection:
                 "name": name,
                 "fps": fps,
                 "clips": clip_count,
-                "timecode": start_tc
+                "timecode": timeline.GetCurrentTimecode() or start_tc
             }
         except Exception as e:
             return {"success": False, "message": str(e)}
@@ -395,10 +414,22 @@ class ResolveConnection:
         return magic_tools.add_quick_title(self, text)
 
     def generate_subtitles(self):
-        return False, "Not implemented yet"
+        if not self.project or not self.project.GetCurrentTimeline():
+            return False, "Open a timeline with audio first."
+        try:
+            ok = self.project.GetCurrentTimeline().CreateSubtitlesFromAudio()
+            return bool(ok), "Subtitles generated." if ok else "Subtitle generation failed. This requires Resolve Studio and supported audio."
+        except Exception as exc:
+            return False, f"Subtitle generation unavailable: {exc}"
 
     def upload_to_youtube(self):
-        return False, "Not implemented yet"
+        return False, "YouTube upload requires an OAuth connection, which this app does not have. Export the video and upload it in YouTube Studio."
+
+    def asset_directory(self):
+        import db
+        path = os.path.join(db.data_dir, "templates")
+        os.makedirs(path, exist_ok=True)
+        return path
 
     def get_templates(self):
         """List templates from both built-in and user directories"""
@@ -413,26 +444,36 @@ class ResolveConnection:
                         if not f.startswith('.'): files.add(f)
                         
             # 2. User-added templates (next to executable or script)
-            user_dir = os.path.join(get_executable_dir(), "templates")
+            user_dir = self.asset_directory()
             if not os.path.exists(user_dir):
                 os.makedirs(user_dir)
-            for f in os.listdir(user_dir):
-                if not f.startswith('.'): files.add(f)
+            for directory in {user_dir, os.path.join(get_executable_dir(), "templates")}:
+                if os.path.isdir(directory):
+                    for f in os.listdir(directory):
+                        if not f.startswith('.') and os.path.isfile(os.path.join(directory, f)):
+                            files.add(f)
                 
-            return {"success": True, "templates": list(files)}
+            invalid = []
+            for name in files:
+                candidates = [os.path.join(user_dir, name), os.path.join(get_executable_dir(), "templates", name)]
+                existing = next((p for p in candidates if os.path.isfile(p)), None)
+                if existing and os.path.getsize(existing) == 0:
+                    invalid.append(name)
+            return {"success": True, "templates": sorted(files - set(invalid)), "invalid_assets": invalid}
         except Exception as e:
             return {"success": False, "message": str(e)}
 
     def import_template(self, template_name):
         """Import a template file into the Media Pool"""
-        if not self.media_pool:
-            return False, "Not connected to Media Pool"
-            
+        if os.path.basename(template_name) != template_name or "\\" in template_name:
+            return False, "Invalid template filename"
         try:
             template_path = None
             
             # Check user directory first (allows overriding built-in templates)
-            user_path = os.path.join(get_executable_dir(), "templates", template_name)
+            user_path = os.path.join(self.asset_directory(), template_name)
+            if not os.path.isfile(user_path):
+                user_path = os.path.join(get_executable_dir(), "templates", template_name)
             if os.path.exists(user_path):
                 template_path = user_path
             elif getattr(sys, 'frozen', False):
@@ -443,8 +484,22 @@ class ResolveConnection:
             if not template_path:
                 return False, f"Template file not found: {template_name}"
                 
-            media_storage = self.resolve.GetMediaStorage()
-            items = media_storage.AddItemListToMediaPool(template_path)
+            if os.path.getsize(template_path) == 0:
+                return False, "This bundled template file is empty. Replace it with a valid asset."
+            if template_path.lower().endswith(".drfx"):
+                import subprocess
+                if sys.platform == "darwin":
+                    subprocess.run(["open", template_path], check=True)
+                elif sys.platform == "win32":
+                    os.startfile(template_path)
+                else:
+                    subprocess.run(["xdg-open", template_path], check=True)
+                return True, "Opened the Resolve template installer. Complete installation in Resolve; find it in the Effects Library."
+            if not self.media_pool:
+                return False, "Connect to a Resolve project before importing media."
+            if template_path.lower().endswith(".setting"):
+                return False, "Fusion .setting files must be loaded in a Fusion composition. Use a .drfx package for installation."
+            items = self.media_pool.ImportMedia([template_path])
             
             if not items:
                 return False, f"Failed to import {template_name}. Is the file format supported?"

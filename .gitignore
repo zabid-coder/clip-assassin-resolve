@@ -27,8 +27,7 @@ coverage.xml
 *.tmp
 
 # Dependencies
-requirements.txt
-requirements-*.txt
+# Keep dependency manifests in the repository so fresh checkouts remain installable.
 
 # Distribution / packaging
 .Python
@@ -68,3 +67,7 @@ MANIFEST
 ehthumbs.db
 Thumbs.db
 ```
+# Local verification artifacts and environment
+.review/
+.venv/
+.pytest_cache/

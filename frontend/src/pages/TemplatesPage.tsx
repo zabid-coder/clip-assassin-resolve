@@ -1,67 +1,49 @@
-import { Library, UploadCloud, Box } from 'lucide-react'
-import { ActionButton } from '../components/ui'
-
-interface Props {
-  templates: string[]
-  fetchTemplates: () => void
-  loading: Record<string, boolean>
-  setLoading: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
-  runTask: (endpoint: string, payload: any, buttonId: string) => void
-  addLog: (msg: string, type: 'info' | 'success' | 'error') => void
-}
-
-export function TemplatesPage({ templates, fetchTemplates, loading, setLoading, runTask, addLog }: Props) {
-  return (
-    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
-      <div className="flex justify-between items-end mb-2">
-        <div>
-          <h2 className="text-xl font-bold text-white flex items-center gap-2">
-            <Library className="text-brand-primary" /> Asset Library
-          </h2>
-          <p className="text-xs text-white/50 mt-1">Imports .drfx templates from your plugin folder straight into the Media Pool.</p>
-        </div>
-        <button onClick={fetchTemplates} className="text-xs text-brand-primary hover:text-white transition-colors">Refresh Library</button>
-      </div>
-
-      <div
-        className={`transition-all duration-300 ${loading['drop'] ? 'ring-2 ring-brand-primary' : ''}`}
-        onDragOver={(e) => { e.preventDefault(); setLoading(prev => ({ ...prev, drop: true })) }}
-        onDragLeave={(e) => { e.preventDefault(); setLoading(prev => ({ ...prev, drop: false })) }}
-        onDrop={(e) => {
-          e.preventDefault()
-          setLoading(prev => ({ ...prev, drop: false }))
-          if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-            addLog("Browser security prevents reading the absolute path. Please place the file in the 'templates' folder directly.", 'error')
-          }
-        }}
-      >
-        {templates.length === 0 ? (
-          <div className={`bg-black/20 border border-white/5 border-dashed rounded-2xl p-12 text-center text-white/40 transition-colors ${loading['drop'] ? 'bg-brand-primary/10 border-brand-primary/50 text-brand-primary/80' : ''}`}>
-            <UploadCloud size={40} className="mx-auto mb-3 opacity-40" />
-            <p className="text-sm font-medium">Drop templates here</p>
-            <p className="text-xs mt-1 opacity-70">Add .drfx, images, or audio to the templates folder.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-5">
-            {templates.map(fileName => (
-              <div key={fileName} className="bg-black/20 backdrop-blur-md border border-white/5 rounded-2xl p-5 hover:border-brand-primary/30 hover:bg-black/40 transition-all flex flex-col justify-between h-[140px]">
-                <div className="flex items-start gap-3">
-                  <div className="p-2 bg-brand-primary/10 text-brand-primary rounded-lg shrink-0">
-                    <Box size={16} />
-                  </div>
-                  <p className="text-xs font-semibold text-white/90 break-words line-clamp-2">{fileName}</p>
-                </div>
-                <ActionButton
-                  text="Import to Media Pool"
-                  category="organize" variant="secondary"
-                  isLoading={loading[`import_${fileName}`]}
-                  onClick={() => runTask('import_template', { template_name: fileName }, `import_${fileName}`)}
-                />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { Boxes, PackageCheck, RefreshCw, Search, Download, ExternalLink } from 'lucide-react'
+import { ActionButton, InputField } from '../components/ui'
+import { api, API } from '../api'
+interface Package {id:string;name:string;bytes:number;categories:string[];template_count:number;locations:string[];fonts:{family:string;url:string;status:string}[];dependencies:{name:string}[];bundled:boolean;preview?:string;available:boolean;installation:{state:string;files?:number;missing_or_changed?:number;verified?:boolean}}
+interface Props {templates:string[];fetchTemplates:()=>void;loading:Record<string,boolean>;setLoading:React.Dispatch<React.SetStateAction<Record<string,boolean>>>;runTask:(endpoint:string,payload:any,buttonId:string)=>void;addLog:(msg:string,type:'info'|'success'|'error')=>void}
+export function TemplatesPage({templates,fetchTemplates,loading,runTask,addLog}:Props){
+ const [packages,setPackages]=useState<Package[]>([])
+ const [query,setQuery]=useState('')
+ const [category,setCategory]=useState('All')
+ const [selected,setSelected]=useState('')
+ const [replace,setReplace]=useState(false)
+ const [notes,setNotes]=useState<{name:string;text:string}[]>([])
+ const [tab,setTab]=useState('packages')
+ const [uploading,setUploading]=useState(false)
+ const callbacks=useRef({addLog,fetchTemplates});callbacks.current={addLog,fetchTemplates}
+ const refresh=useCallback(async()=>{try{const data=await api('library');setPackages(data.packages);callbacks.current.fetchTemplates()}catch(e){callbacks.current.addLog(e instanceof Error?e.message:'Library failed','error')}},[])
+ useEffect(()=>{void refresh();const timer=setInterval(refresh,12000);return()=>clearInterval(timer)},[refresh])
+ const active=packages.find(p=>p.id===selected)
+ useEffect(()=>{if(selected)document.getElementById('package-installation')?.scrollIntoView({behavior:'smooth',block:'start'})},[selected])
+ const act=async(fn:()=>Promise<unknown>)=>{try{await fn();return true}catch(e){addLog(e instanceof Error?e.message:'Operation failed','error');return false}}
+ const pick=async(p:Package)=>{setSelected(p.id);setReplace(false);setNotes([]);await act(async()=>setNotes((await api(`library/${p.id}/notes`)).notes))}
+ const upload=async(files:FileList|null)=>{if(!files)return;setUploading(true);await act(async()=>{for(const file of Array.from(files)){const response=await fetch(`${API}/assets/upload?filename=${encodeURIComponent(file.name)}`,{method:'POST',body:file});const data=await response.json();if(!response.ok)throw new Error(data.detail || data.message);addLog(data.message,'success')}await refresh()});setUploading(false)}
+ return <div className="page-stack">
+ <div className="section-heading"><div><div className="eyebrow">Included with Clip Assassin</div><h1>Template Library</h1><p>Your Resolve packages, fonts and dependencies in one place. Built-in packages stay available when the original download folder is moved.</p></div><button className="secondary-button" onClick={refresh}><RefreshCw size={15}/>Refresh</button></div>
+ <div className="flex flex-wrap gap-3"><span className="status-badge">{packages.filter(p=>p.bundled).length} built-in packages</span><span className="status-badge">{packages.reduce((n,p)=>n+p.template_count,0)} template entries</span><span className="status-badge installed">{packages.filter(p=>p.installation.state==='installed').length} installed packages</span></div>
+ <div className="segmented-control">{[['packages','Resolve packages'],['assets','Media & custom imports'],['sources','Add a library folder']].map(([id,title])=><button className={tab===id?'selected':''} key={id} onClick={()=>setTab(id)}>{title}</button>)}</div>
+ {tab==='packages'&&<>
+ <div className="flex gap-3 items-center"><div className="search-input flex-1 !m-0"><Search size={15}/><input aria-label="Search template packages" placeholder="Search packages, categories or fonts" value={query} onChange={e=>setQuery(e.target.value)}/></div><select aria-label="Template category" className="p-2" value={category} onChange={e=>setCategory(e.target.value)}>{['All',...new Set(packages.flatMap(p=>p.categories))].map(c=><option key={c}>{c}</option>)}</select></div>
+ <div className="library-grid">{packages.filter(p=>(category==='All'||p.categories.includes(category))&&(p.name+' '+p.categories.join(' ')+' '+p.fonts.map(f=>f.family).join(' ')).toLowerCase().includes(query.toLowerCase())).map(p=><button key={p.id} className={`package-card ${selected===p.id?'selected':''}`} onClick={()=>pick(p)}>
+ <div className="package-thumb">{p.preview?<img src={`${API}/library/${p.id}/preview`} alt={`${p.name} preview`}/>:<Boxes size={32}/>}</div>
+ <div className="flex justify-between gap-2"><h3>{p.name}</h3><PackageCheck className="shrink-0 text-white/30" size={17}/></div><p>{p.categories.join(' · ')}<br/>{p.template_count} templates · {(p.bytes/1024/1024).toFixed(1)} MB</p><div className="flex gap-2 flex-wrap"><span className={`status-badge ${p.installation.state}`}>{p.installation.state.replaceAll('_',' ')}</span>{p.bundled&&<span className="status-badge">Built in</span>}{p.fonts.some(f=>f.status!=='installed')&&<span className="status-badge missing">Fonts need attention</span>}</div>
+ </button>)}</div>
+ {active&&<section id="package-installation" className="panel library-detail" aria-label="Package installation"><div className="section-heading"><div><div className="eyebrow">Package setup</div><h2>{active.name}</h2><p>1. Check fonts · 2. Review installation · 3. Restart Resolve and open the listed category.</p></div><button className="text-button" onClick={()=>setSelected('')}>Close</button></div>
+ <div className="detail-grid mt-6"><div><div className="eyebrow">Required fonts</div>{active.fonts.length?active.fonts.map(f=><div key={f.family} className="font-row"><span>{f.family}</span><span className={`status-badge ${f.status}`}>{f.status.replaceAll('_',' ')}</span>{f.url&&<a href={f.url} target="_blank" rel="noreferrer" aria-label={`Get ${f.family} font`}><ExternalLink size={14}/></a>}</div>):<p className="muted">No font requirement was found in the supplied package.</p>}
+ <button className="text-button" onClick={()=>act(async()=>{const data=await api('library/fonts/refresh',{});setPackages(data.packages)})}>Recheck installed fonts</button>
+ <InputField id="downloadedFontPath" browseType="file" placeholder="Downloaded .ttf or .otf font file"/><button className="text-button" onClick={()=>act(async()=>{const data=await api('library/fonts/install',{path:(document.getElementById('downloadedFontPath') as HTMLInputElement).value});addLog(data.message,'info')})}>Open font installer</button>
+ </div><div><div className="eyebrow">Where to find it in Resolve</div><ul className="detail-list">{active.locations.map(location=><li key={location}>{location}</li>)}</ul><div className="eyebrow mt-5">Included dependencies</div><p className="muted">{active.dependencies.length?active.dependencies.map(d=>d.name).join(', '):'No separate Fuse dependency.'}</p><p className="muted mt-3">Files are installed into your per-user Resolve directory. Restart Resolve to load newly installed templates and fonts.</p></div></div>
+ <label className="flex items-center gap-2 mt-6"><input type="checkbox" checked={replace} onChange={e=>setReplace(e.target.checked)}/>Allow repair/replacement of existing files; keep a backup of originals</label>
+ <div className="action-row"><button className="secondary-button" onClick={()=>act(async()=>{const data=await api(`library/${active.id}/verify`);setPackages(prev=>prev.map(p=>p.id===active.id?{...p,installation:data.installation}:p));addLog(data.installation.state==='installed'?'Installation files verified.':'No complete managed installation found.','info')})}>Verify installation</button>
+ {active.installation.state!=='not_installed'&&<button className="secondary-button" onClick={()=>runTask('library_remove',{package_id:active.id},'library_remove')}>Remove managed install</button>}
+ <button className="primary-button" disabled={!active.available} onClick={()=>runTask('library_install',{package_id:active.id,replace},'library_install')}><Download size={15}/>Review & install</button></div>
+ {notes.length>0&&<details className="mt-5"><summary className="text-sm cursor-pointer text-white/60">Original font and installation notes</summary>{notes.map((note,i)=><div className="mt-4" key={i}><h4 className="text-xs mb-2">{note.name}</h4><pre className="folder-preview !min-h-0 whitespace-pre-wrap">{note.text}</pre></div>)}</details>}
+ </section>}
+ </>}
+ {tab==='sources'&&<section className="panel page-stack"><div><h2 className="text-lg font-semibold">Add another local library</h2><p className="muted mt-2">The 12 supplied packages are already built in. This scan registers additional .drfx packages and skips duplicates.</p></div><InputField id="librarySourceFolder" placeholder="Additional library folder" browseType="folder"/><ActionButton text="Scan folder" onClick={()=>act(async()=>{const data=await api('library/scan',{path:(document.getElementById('librarySourceFolder') as HTMLInputElement).value});addLog(data.message,'success');await refresh()})}/></section>}
+ {tab==='assets'&&<section className="panel page-stack" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();void upload(e.dataTransfer.files)}}><div><h2 className="text-lg font-semibold">Add media or custom packages</h2><p className="muted mt-2">Drag files here or browse. .drfx uploads are registered as installable packages; media files can be imported into your Media Pool. Up to 512 MB per file.</p></div><input aria-label="Upload library assets" type="file" multiple disabled={uploading} accept=".drfx,.png,.jpg,.jpeg,.wav,.mp3,.mov,.mp4" onChange={e=>void upload(e.target.files)}/>{uploading&&<p className="muted">Uploading to the local library…</p>}<div className="library-grid">{templates.filter(name=>!name.endsWith('.setting')).map(name=><div className="package-card" key={name}><h3>{name}</h3><ActionButton text={name.endsWith('.drfx')?'Open Resolve installer':'Import to Media Pool'} isLoading={loading[`import_${name}`]} onClick={()=>runTask('import_template',{template_name:name},`import_${name}`)}/></div>)}</div></section>}
+ </div>
 }

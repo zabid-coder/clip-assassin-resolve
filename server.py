@@ -2,11 +2,11 @@ import logging
 import os
 import sys
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 # Ensure resolve_core is accessible
@@ -17,8 +17,16 @@ import db
 # Import new template engine modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from services.template_engine import template_engine
+from services.jobs import JobManager, native_lock
+from services import library, workflows, integrations
+from services.folder_presets import capture
 from services.builtin_templates import get_builtin_templates, get_builtin_template_by_id
-from models.ingest_template import IngestTemplate
+from models.ingest_template import IngestTemplate, FolderNode, TemplateParameter
+from config import config
+from pathlib import Path
+import asyncio
+from starlette.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,17 +34,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("clip_assassin")
 
-app = FastAPI(title="Clip Assassin API", version="2.0.1")
+app = FastAPI(title="Clip Assassin API", version="2.1.1")
 
 # CORS: only the local dev vite server and the packaged desktop app origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
+    allow_origins=config.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -44,6 +47,8 @@ app.add_middleware(
 
 # Initialize Resolve engine
 engine = ResolveConnection()
+jobs = JobManager()
+job_runner = workflows.runner(engine)
 
 # --- Pydantic Models ---
 
@@ -112,8 +117,8 @@ class TemplateCreateRequest(BaseModel):
     name: str
     description: str
     category: str = "Custom"
-    parameters: List[Dict[str, Any]] = []
-    structure: List[Dict[str, Any]] = []
+    parameters: List[TemplateParameter] = Field(default_factory=list)
+    structure: List[FolderNode] = Field(default_factory=list)
 
 class TemplatePreviewRequest(BaseModel):
     template_id: str
@@ -155,16 +160,47 @@ class StandardResponse(BaseModel):
 
 # --- API Endpoints ---
 
+# Resolve's native connection and the active project are shared across requests.
+# Serialize calls, including polling, so a job cannot switch context under another job.
+RESOLVE_PATHS = {
+    "status", "connect", "stats", "context", "set_context", "cut", "pick_clips",
+    "markers_to_timeline", "filter_by_flag", "merge_timelines", "apply_watermark",
+    "batch_render", "extract_thumbnails", "youtube_chapters", "organize_bins", "auto_sync",
+    "social_reframe", "add_title", "add_adjustment_layer", "export_shotlist", "master_ingest",
+    "subtitles", "upload_youtube", "import_template", "snapshot", "batch_rename", "project_stats",
+    "jl_cut", "render_status", "render_presets", "silence_remove", "badwords/scan", "badwords/clean",
+}
+
+@app.middleware("http")
+async def resolve_context_middleware(request: Request, call_next):
+    route = request.url.path.removeprefix("/api/")
+    if route not in RESOLVE_PATHS or request.method == "OPTIONS":
+        return await call_next(request)
+    await run_in_threadpool(native_lock.acquire)
+    try:
+        if route not in {"connect", "master_ingest"}:
+            await run_in_threadpool(engine.refresh)
+        if route not in {"status", "connect", "master_ingest", "import_template"} and not engine.project:
+            return JSONResponse(content={"success": False, "message": "Open a Resolve project and connect first."})
+        return await call_next(request)
+    except Exception:
+        logger.exception("Resolve operation failed: %s", route)
+        return JSONResponse(status_code=500, content={"success": False, "message": "Resolve operation failed. Reconnect and try again."})
+    finally:
+        native_lock.release()
+
+@app.get("/api/health")
+def health():
+    return {"success": True, "version": app.version}
+
 @app.get("/api/status", response_model=ConnectResponse)
 def get_status():
-    """Check if Resolve is currently connected"""
-    if engine.project and engine.media_pool:
-        return ConnectResponse(success=True, message="Connected to DaVinci Resolve")
-    return ConnectResponse(success=False, message="Not connected")
+    return ConnectResponse(success=bool(engine.resolve), message=engine.connection_message)
 
 @app.post("/api/connect", response_model=ConnectResponse)
 def connect_resolve():
     success, msg = engine.connect()
+    engine.connection_message = msg
     return ConnectResponse(success=success, message=msg)
 
 @app.get("/api/stats")
@@ -275,7 +311,7 @@ def execute_upload_youtube():
 @app.get("/api/templates")
 def get_templates():
     """Get all available templates (built-in + custom)"""
-    builtin = [t.to_dict() for t in get_builtin_templates()]
+    builtin = [t.to_dict() for t in get_builtin_templates()] + db.get_folder_templates()
     # Could add custom templates from database here
     return {"success": True, "templates": builtin}
 
@@ -298,7 +334,7 @@ def get_builtin_template_list():
 @app.get("/api/templates/{template_id}")
 def get_template_detail(template_id: str):
     """Get detailed template by ID"""
-    template = get_builtin_template_by_id(template_id)
+    template = find_template(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return {"success": True, "template": template.to_dict()}
@@ -306,7 +342,7 @@ def get_template_detail(template_id: str):
 @app.post("/api/templates/preview", response_model=TemplatePreviewResponse)
 def preview_template(req: TemplatePreviewRequest):
     """Generate ASCII tree preview of template structure"""
-    template = get_builtin_template_by_id(req.template_id)
+    template = find_template(req.template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     
@@ -322,7 +358,7 @@ def preview_template(req: TemplatePreviewRequest):
 @app.post("/api/templates/generate", response_model=TemplateGenerateResponse)
 def generate_template_structure(req: TemplateGenerateRequest):
     """Generate actual folder structure from template"""
-    template = get_builtin_template_by_id(req.template_id)
+    template = find_template(req.template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     
@@ -344,56 +380,104 @@ def generate_template_structure(req: TemplateGenerateRequest):
         base_path=result["base_path"]
     )
 
-@app.post("/api/templates/create", response_model=StandardResponse)
+def find_template(template_id):
+    builtin = get_builtin_template_by_id(template_id)
+    if builtin:
+        return builtin
+    for data in db.get_folder_templates():
+        if data["id"] == template_id:
+            return IngestTemplate(**data)
+    return None
+
+@app.post("/api/templates/create")
+@app.post("/api/templates")
 def create_custom_template(req: TemplateCreateRequest):
-    """Create a new custom template (to be saved to database)"""
-    # This would save to database - for now just validate
-    try:
-        # Validate structure
-        template_dict = {
-            "id": f"custom-{req.name.lower().replace(' ', '-')}",
-            "name": req.name,
-            "description": req.description,
-            "category": req.category,
-            "parameters": req.parameters,
-            "structure": req.structure
-        }
-        # In full implementation, save to database
-        return StandardResponse(
-            success=True, 
-            message=f"Template '{req.name}' created successfully"
-        )
-    except Exception as e:
-        return StandardResponse(success=False, message=str(e))
+    from uuid import uuid4
+    template = IngestTemplate(id=f"custom-{uuid4().hex[:12]}", **req.model_dump())
+    # Validate the recursive structure before storing.
+    if not template.name.strip() or not template.structure:
+        raise HTTPException(400, "Template name and structure are required")
+    db.save_folder_template(template)
+    return {"success": True, "message": f"Template '{template.name}' saved", "template": template.to_dict()}
+
+@app.put("/api/templates/{template_id}")
+def update_custom_template(template_id: str, req: TemplateCreateRequest):
+    if not find_template(template_id):
+        raise HTTPException(404, "Template not found")
+    if get_builtin_template_by_id(template_id):
+        raise HTTPException(400, "Save a copy to customize a built-in template")
+    if not req.name.strip() or not req.structure:
+        raise HTTPException(400, "Template name and structure are required")
+    template = IngestTemplate(id=template_id, **req.model_dump())
+    db.save_folder_template(template)
+    return {"success": True, "message": "Template updated", "template": template.to_dict()}
+
+@app.delete("/api/templates/{template_id}", response_model=StandardResponse)
+def delete_custom_template(template_id: str):
+    if not db.delete_folder_template(template_id):
+        raise HTTPException(404, "Custom template not found")
+    return StandardResponse(success=True, message="Template deleted")
 
 @app.post("/api/templates/import", response_model=StandardResponse)
 def import_template_file(req: TemplateImportRequest):
-    """Import template from JSON file"""
     try:
+        from uuid import uuid4
         template = template_engine.import_template(req.template_name)
-        # In full implementation, save to database
-        return StandardResponse(
-            success=True, 
-            message=f"Template '{template.name}' imported successfully"
-        )
-    except Exception as e:
-        return StandardResponse(success=False, message=str(e))
+        template.id = f"custom-{uuid4().hex[:12]}"
+        db.save_folder_template(template)
+        return StandardResponse(success=True, message=f"Template '{template.name}' imported")
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
 
 @app.post("/api/templates/export", response_model=StandardResponse)
 def export_template_file(template_id: str, filepath: str):
-    """Export template to JSON file"""
-    template = get_builtin_template_by_id(template_id)
+    template = find_template(template_id)
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-    
+        raise HTTPException(404, "Template not found")
     try:
         template_engine.export_template(template, filepath)
-        return StandardResponse(
-            success=True, 
-            message=f"Template exported to {filepath}"
-        )
-    except Exception as e:
-        return StandardResponse(success=False, message=str(e))
+        return StandardResponse(success=True, message=f"Template exported to {filepath}")
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+@app.get("/api/assets")
+def get_assets():
+    return engine.get_templates()
+
+@app.post("/api/import_template", response_model=StandardResponse)
+def import_resolve_asset(req: TemplateImportRequest):
+    success, message = engine.import_template(req.template_name)
+    return StandardResponse(success=success, message=message)
+
+@app.post("/api/assets/upload")
+async def upload_asset(request: Request, filename: str):
+    if Path(filename).name != filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(400, "Invalid asset filename")
+    if Path(filename).suffix.lower() not in {".drfx", ".setting", ".png", ".jpg", ".jpeg", ".wav", ".mp3", ".mov", ".mp4"}:
+        raise HTTPException(400, "Unsupported asset type")
+    from uuid import uuid4
+    directory = Path(engine.asset_directory())
+    destination = directory / filename
+    temporary = directory / ('.upload-' + uuid4().hex)
+    if destination.exists(): raise HTTPException(409, "An asset with that filename already exists")
+    size = 0
+    try:
+        with temporary.open('xb') as handle:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > 512 * 1024 * 1024:
+                    raise HTTPException(413, "Asset must be 512 MB or smaller")
+                handle.write(chunk)
+        if not size: raise HTTPException(400, "Asset is empty")
+        if destination.exists(): raise HTTPException(409, "An asset with that filename already exists")
+        if destination.suffix.lower() == '.drfx':
+            library.archive_entries(temporary)
+        temporary.rename(destination)
+        if destination.suffix.lower() == '.drfx':
+            await run_in_threadpool(library.scan_folder, str(directory))
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {"success": True, "message": f"Added {filename} to the library"}
 
 @app.get("/api/context")
 def get_global_context():
@@ -453,7 +537,7 @@ def browse_path(type: str = "file"):
 def open_folder(path: str):
     """Open a folder in the system file manager with path validation."""
     try:
-        full_path = os.path.abspath(path)
+        full_path = str((Path(__file__).parent / path).resolve()) if not os.path.isabs(path) else str(Path(path).resolve())
 
         # Security: reject path traversal attempts
         if ".." in path:
@@ -498,17 +582,17 @@ def clean_badwords_timeline(req: BadWordsCleanRequest):
 
 class RenameRequest(BaseModel):
     prefix: str
-    start_number: int = 1
-    scope: str = "timeline"
+    start_number: int = Field(default=1, ge=1)
+    scope: str = Field(default="timeline", pattern="^(timeline|selected)$")
 
 class SilenceRequest(BaseModel):
-    threshold_db: int = -40
-    min_silence_ms: int = 500
-    padding_ms: int = 100
+    threshold_db: int = Field(default=-40, ge=-100, le=0)
+    min_silence_ms: int = Field(default=500, ge=1, le=60000)
+    padding_ms: int = Field(default=100, ge=0, le=10000)
 
 class JLCutRequest(BaseModel):
-    cut_type: str = "j"
-    overlap_frames: int = 10
+    cut_type: str = Field(default="j", pattern="^[jl]$")
+    overlap_frames: int = Field(default=10, ge=1, le=1000)
 
 @app.post("/api/snapshot", response_model=StandardResponse)
 def create_snapshot():
@@ -528,6 +612,10 @@ def get_project_stats():
 def apply_jl_cuts(req: JLCutRequest):
     success, msg = engine.apply_jl_cuts(req.cut_type, req.overlap_frames)
     return StandardResponse(success=success, message=msg)
+
+@app.get("/api/render_presets")
+def get_render_presets():
+    return {"success": True, "presets": engine.project.GetRenderPresetList() or []} if engine.project else {"success": False, "message": "Connect to a project first", "presets": []}
 
 @app.get("/api/render_status")
 def get_render_status():
@@ -556,6 +644,136 @@ def delete_preset(preset_id: int):
     db.delete_preset(preset_id)
     return StandardResponse(success=True, message="Preset deleted")
 
+# Guided library, folder presets, connections and background jobs.
+class PathInput(BaseModel):
+    path: str
+
+class WorkflowInput(BaseModel):
+    operation: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+class SubmitInput(BaseModel):
+    preview_token: str
+
+class IntegrationInput(BaseModel):
+    whisper_model: Optional[str] = None
+    openai_key: Optional[str] = None
+    youtube_client_id: Optional[str] = None
+    youtube_client_secret: Optional[str] = None
+
+@app.exception_handler(ValueError)
+async def friendly_value_error(request: Request, exc: ValueError):
+    return JSONResponse(status_code=400, content={"success": False, "message": str(exc), "detail": str(exc)})
+
+@app.get("/api/library")
+def library_catalog():
+    return {"success": True, "packages": library.catalog()}
+
+@app.get("/api/library/{package_id}/preview")
+def package_preview_image(package_id: str):
+    package = library.package_by_id(package_id)
+    if not package.get('preview'):
+        raise HTTPException(404, "No preview image available")
+    path = (library.BUNDLED / package['preview']).resolve()
+    if not path.is_relative_to(library.BUNDLED.resolve()) or not path.is_file():
+        raise HTTPException(404, "Preview image not found")
+    return FileResponse(str(path))
+
+@app.get("/api/library/{package_id}/notes")
+def package_notes(package_id: str):
+    package = library.package_by_id(package_id)
+    folder = library.package_path(package).parent
+    notes = []
+    for item in package.get('notes', []):
+        path = (folder / item['path']).resolve()
+        if path.is_relative_to(folder.resolve()) and path.is_file():
+            notes.append({"name": item['name'], "text": path.read_text(encoding='utf-8', errors='replace')[:20000]})
+    return {"success": True, "notes": notes}
+
+@app.get("/api/library/{package_id}/verify")
+def verify_package(package_id: str):
+    return {"success": True, "installation": library.install_status(library.package_by_id(package_id), True)}
+
+@app.post("/api/library/scan")
+def scan_library(req: PathInput):
+    return library.scan_folder(req.path)
+
+@app.post("/api/library/fonts/refresh")
+def refresh_fonts():
+    library.font_families.cache_clear()
+    return {"success": True, "message": "Font status refreshed", "packages": library.catalog()}
+
+@app.post("/api/library/fonts/install")
+def open_font_file(req: PathInput):
+    path = Path(req.path).expanduser().resolve()
+    if path.suffix.lower() not in ('.ttf', '.otf', '.ttc') or not path.is_file():
+        raise HTTPException(400, "Choose a downloaded TTF, OTF or TTC font file")
+    if sys.platform == 'darwin': subprocess.run(['open', str(path)], check=True)
+    elif sys.platform == 'win32': os.startfile(str(path))
+    else: subprocess.run(['xdg-open', str(path)], check=True)
+    return {"success": True, "message": "Font installer opened. Complete installation, restart Resolve, then refresh font status."}
+
+@app.post("/api/folder-presets/capture")
+def capture_folder_preset(req: PathInput):
+    return capture(req.path)
+
+@app.post("/api/jobs/preview")
+def preview_workflow(req: WorkflowInput):
+    return workflows.preview(engine, req.operation, req.payload)
+
+@app.get("/api/jobs")
+def get_jobs():
+    return {"success": True, "jobs": jobs.list()}
+
+@app.post("/api/jobs")
+def submit_job(req: SubmitInput):
+    body = workflows.read_token(req.preview_token)
+    # Recheck the preview: selections, files, prerequisites and consent can change.
+    current = workflows.preview(engine, body['operation'], body['payload'])
+    if not current['ready']: raise HTTPException(400, '; '.join(current['errors']))
+    if body['source'] != current['source']:
+        raise HTTPException(409, "Resolve selection changed after preview. Review again.")
+    return {"success": True, "job": jobs.submit(body['operation'], body['payload'], job_runner, body['source'])}
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    job = jobs.get(job_id)
+    if not job: raise HTTPException(404, "Job not found")
+    return {"success": True, "job": job}
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    return {"success": True, "job": jobs.cancel(job_id)}
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str):
+    previous = jobs.get(job_id)
+    if not previous: raise HTTPException(404, "Job not found")
+    if previous['status'] in ('queued', 'running', 'cancelling', 'succeeded'):
+        raise HTTPException(400, "Only failed, cancelled or interrupted jobs can be retried")
+    # Retry always returns a fresh review instead of silently repeating changes.
+    return workflows.preview(engine, previous['operation'], previous['payload'])
+
+@app.get("/api/capabilities")
+def get_capabilities():
+    return workflows.capabilities(engine)
+
+@app.get("/api/integrations")
+def integration_status():
+    return integrations.status()
+
+@app.post("/api/integrations")
+def save_integrations(req: IntegrationInput):
+    return integrations.configure(req.model_dump(exclude_none=True))
+
+@app.post("/api/integrations/youtube/connect")
+def connect_youtube():
+    return integrations.start_youtube_oauth()
+
+@app.post("/api/integrations/youtube/disconnect")
+def disconnect_youtube():
+    return integrations.disconnect_youtube()
+
 # PyInstaller compatibility for file paths
 if getattr(sys, 'frozen', False):
     base_dir = sys._MEIPASS
@@ -571,7 +789,11 @@ if os.path.isdir(frontend_dist):
     @app.get("/{catchall:path}")
     def serve_frontend(catchall: str):
         # Serve static files if they exist (e.g., /logo.jpg, /favicon.ico)
-        file_path = os.path.join(frontend_dist, catchall)
+        if catchall.startswith("api/"):
+            raise HTTPException(404, "API endpoint not found")
+        file_path = str(Path(frontend_dist, catchall).resolve())
+        if not Path(file_path).is_relative_to(Path(frontend_dist).resolve()):
+            raise HTTPException(404, "File not found")
         no_cache_headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
         if os.path.isfile(file_path):
             return FileResponse(file_path, headers=no_cache_headers)
@@ -591,197 +813,7 @@ if __name__ == "__main__":
         # In production (packaged), open the browser automatically
         Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:8000")).start()
         # Must pass 'app' instance, not string, when not using reload
-        uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
+        uvicorn.run(app, host=config.API_HOST, port=config.API_PORT, reload=False)
     else:
         # In development, use reload
-        uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
-
-
-# ==================== TEMPLATE API ENDPOINTS ====================
-
-class TemplateCreateRequest(BaseModel):
-    name: str
-    description: Optional[str] = ""
-    category: str = "Custom"
-    structure: List[Dict[str, Any]]
-    parameters: List[Dict[str, Any]]
-    placeholders: Dict[str, str] = {}
-
-class TemplateUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    category: Optional[str] = None
-    structure: Optional[List[Dict[str, Any]]] = None
-    parameters: Optional[List[Dict[str, Any]]] = None
-    placeholders: Optional[Dict[str, str]] = None
-
-class TemplateParamRequest(BaseModel):
-    param_values: Dict[str, Any]
-
-@app.get("/api/templates/builtin")
-def get_builtin_templates_api():
-    """Get all built-in templates"""
-    from modules.master_ingest import get_builtin_templates
-    templates = get_builtin_templates()
-    return {"success": True, "templates": templates}
-
-@app.get("/api/templates")
-def get_all_templates(include_builtin: bool = False):
-    """Get all user-created templates (optionally include built-in)"""
-    templates = template_db.get_all_templates(include_builtin=include_builtin)
-    return {"success": True, "templates": templates}
-
-@app.get("/api/templates/{template_id}")
-def get_template(template_id: int):
-    """Get a single template by ID"""
-    template = template_db.get_template(template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return {"success": True, "template": template}
-
-@app.post("/api/templates", response_model=StandardResponse)
-def create_template(req: TemplateCreateRequest):
-    """Create a new template"""
-    try:
-        template_id = template_db.create_template(
-            name=req.name,
-            description=req.description,
-            category=req.category,
-            structure=req.structure,
-            parameters=req.parameters,
-            placeholders=req.placeholders,
-            is_builtin=0
-        )
-        return StandardResponse(success=True, message=f"Template created with ID {template_id}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/templates/{template_id}", response_model=StandardResponse)
-def update_template(template_id: int, req: TemplateUpdateRequest):
-    """Update an existing template"""
-    success = template_db.update_template(
-        template_id=template_id,
-        name=req.name,
-        description=req.description,
-        category=req.category,
-        structure=req.structure,
-        parameters=req.parameters,
-        placeholders=req.placeholders
-    )
-    if success:
-        return StandardResponse(success=True, message="Template updated")
-    else:
-        raise HTTPException(status_code=400, detail="Failed to update template or template is builtin")
-
-@app.delete("/api/templates/{template_id}", response_model=StandardResponse)
-def delete_template(template_id: int):
-    """Delete a template (cannot delete built-in)"""
-    success = template_db.delete_template(template_id)
-    if success:
-        return StandardResponse(success=True, message="Template deleted")
-    else:
-        raise HTTPException(status_code=400, detail="Failed to delete template or template is builtin")
-
-@app.post("/api/templates/{template_id}/preview")
-def preview_template_structure(template_id: int, req: TemplateParamRequest):
-    """Preview what folder structure will be created without actually creating it"""
-    from modules.master_ingest import resolve_variables
-    
-    template = template_db.get_template(template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-    
-    # Merge defaults with provided values
-    all_params = {}
-    for param in template["parameters"]:
-        default = param.get("default", "")
-        if default == "{today}" or default == "{date}":
-            from datetime import datetime
-            default = datetime.now().strftime("%Y-%m-%d")
-        all_params[param["name"]] = default
-    all_params.update(req.param_values)
-    
-    # Generate preview structure (simplified representation)
-    def build_preview(elements, indent=0):
-        preview = []
-        for elem in elements:
-            elem_type = elem.get("type", "folder")
-            name = resolve_variables(elem.get("name", ""), all_params)
-            
-            if elem_type == "folder":
-                preview.append(("📁 " + "  " * indent + name, "folder"))
-                children = elem.get("children", [])
-                preview.extend(build_preview(children, indent + 1))
-            elif elem_type == "file":
-                preview.append(("📄 " + "  " * indent + name, "file"))
-            elif elem_type == "loop":
-                var_name = elem.get("var", "i")
-                start = int(resolve_variables(str(elem.get("start", 1)), all_params))
-                end_str = resolve_variables(str(elem.get("end", 1)), all_params)
-                try:
-                    end = int(end_str)
-                except:
-                    end = start
-                
-                template_elem = elem.get("template", {})
-                for i in range(start, min(end + 1, start + 10)):  # Limit preview to 10 items
-                    loop_params = all_params.copy()
-                    loop_params[var_name] = i
-                    loop_name = resolve_variables(template_elem.get("name", ""), loop_params)
-                    preview.append(("📁 " + "  " * indent + loop_name + " (loop)", "folder"))
-        
-        return preview
-    
-    preview_items = build_preview(template["structure"])
-    return {
-        "success": True,
-        "preview": [{"name": item[0], "type": item[1]} for item in preview_items],
-        "params_used": all_params
-    }
-
-@app.post("/api/ingest/from-template", response_model=CreateMasterFolderResponse)
-def create_folder_from_template(req: TemplateParamRequest):
-    """Create master folder structure from a template"""
-    from modules.master_ingest import create_master_folder_from_template
-    
-    # Get template_id from request (need to add to model)
-    template_id = getattr(req, 'template_id', None)
-    parent_dir = getattr(req, 'parent_dir', None)
-    
-    if not template_id or not parent_dir:
-        raise HTTPException(status_code=400, detail="template_id and parent_dir required")
-    
-    success, msg, folder_path = create_master_folder_from_template(
-        template_id, parent_dir, req.param_values
-    )
-    
-    return CreateMasterFolderResponse(
-        success=success,
-        message=msg,
-        folder_path=folder_path
-    )
-
-# Preset endpoints
-class PresetCreateRequest(BaseModel):
-    name: str
-    template_id: int
-    param_values: Dict[str, Any]
-
-@app.get("/api/presets/template/{template_id}")
-def get_presets_for_template(template_id: int):
-    """Get all presets for a template"""
-    presets = template_db.get_presets_for_template(template_id)
-    return {"success": True, "presets": presets}
-
-@app.post("/api/presets", response_model=StandardResponse)
-def create_preset(req: PresetCreateRequest):
-    """Create a new preset"""
-    preset_id = template_db.create_preset(req.name, req.template_id, req.param_values)
-    return StandardResponse(success=True, message=f"Preset created with ID {preset_id}")
-
-@app.delete("/api/presets/{preset_id}", response_model=StandardResponse)
-def delete_preset(preset_id: int):
-    """Delete a preset"""
-    template_db.delete_preset(preset_id)
-    return StandardResponse(success=True, message="Preset deleted")
-
+        uvicorn.run("server:app", host=config.API_HOST, port=config.API_PORT, reload=False)

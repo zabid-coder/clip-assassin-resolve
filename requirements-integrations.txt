@@ -1,0 +1,7 @@
+# Optional providers. No account credentials are bundled.
+openai>=1.30
+keyring>=25
+google-api-python-client>=2.130
+google-auth-oauthlib>=1.2
+# Local speech models are optional and can be installed separately:
+# python -m pip install openai-whisper

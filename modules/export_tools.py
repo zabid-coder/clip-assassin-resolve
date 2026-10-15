@@ -1,78 +1,67 @@
 def batch_render(core, timelines, preset_name, target_dir):
+    from pathlib import Path
+    if not core.project: return False, "Connect to a Resolve project first."
+    if not target_dir.strip(): return False, "Choose an output directory."
+    if not timelines: return False, "Select at least one timeline."
+    original = core.project.GetCurrentTimeline()
+    added = []
     try:
-        if not target_dir or str(target_dir).strip() == "":
-            return False, "Error: Please specify a Save Directory first."
-        if not timelines: return False, "No timelines selected."
-        
-        jobs_added = 0
-        for t_name in timelines:
-            # Find the timeline by name
-            timeline = None
-            for i in range(1, core.project.GetTimelineCount() + 1):
-                t = core.project.GetTimelineByIndex(i)
-                if t.GetName() == t_name:
-                    timeline = t
-                    break
-            
-            if not timeline:
-                continue
-                
-            core.project.SetCurrentTimeline(timeline)
-            
-            if preset_name and str(preset_name).strip() != "":
-                if not core.project.LoadRenderPreset(preset_name):
-                    # Warning if preset doesn't exist but we still try to render
-                    pass
-            
-            core.project.SetRenderSettings({
-                "TargetDir": target_dir,
-                "CustomName": timeline.GetName(),
-            })
-            job_id = core.project.AddRenderJob()
-            if job_id: jobs_added += 1
-                
-        return True, f"✓ Added {jobs_added} jobs to Render Queue.\nOpen Deliver page to start rendering."
-    except Exception as e:
-        return False, f"Error: {str(e)}"
+        Path(target_dir).expanduser().mkdir(parents=True, exist_ok=True)
+        available = {t.GetName(): t for t in [core.project.GetTimelineByIndex(i) for i in range(1, core.project.GetTimelineCount()+1)] if t}
+        if any(name not in available for name in timelines): return False, "A selected timeline no longer exists. Refresh and select again."
+        if preset_name.strip() and not core.project.LoadRenderPreset(preset_name.strip()):
+            return False, f"Render preset '{preset_name}' was not found. Import the bundled XML in Resolve, or choose an existing preset."
+        for name in dict.fromkeys(timelines):
+            timeline = available[name]
+            if timeline.GetEndFrame() <= timeline.GetStartFrame(): raise ValueError(f"Timeline is empty: {name}")
+            if not core.project.SetCurrentTimeline(timeline): raise ValueError(f"Could not select {name}")
+            if not core.project.SetRenderSettings({"TargetDir": str(Path(target_dir).expanduser().resolve()), "CustomName": name, "SelectAllFrames": True}):
+                raise ValueError('Resolve rejected the render settings')
+            job = core.project.AddRenderJob()
+            if not job: raise ValueError(f"Could not queue {name}")
+            added.append(job)
+        return True, f"Added {len(added)} jobs to the Render Queue. Open Deliver to start rendering."
+    except Exception as exc:
+        for job in added: core.project.DeleteRenderJob(job)
+        return False, str(exc)
+    finally:
+        if original: core.project.SetCurrentTimeline(original)
+
 
 def extract_thumbnails(core, mode, target_dir):
+    from pathlib import Path
+    if not core.project: return False, "Connect to a Resolve project first."
+    timeline = core.project.GetCurrentTimeline()
+    if not timeline: return False, "No timeline open."
+    if not target_dir.strip(): return False, "Choose an output directory."
+    if mode not in ('Markers', 'Timeline Center'): return False, "Unknown thumbnail mode."
+    original = timeline.GetCurrentTimecode()
+    original_page = core.resolve.GetCurrentPage()
     try:
-        if not target_dir or str(target_dir).strip() == "":
-            return False, "Error: Please specify a Save Directory first."
-            
-        timeline = core.project.GetCurrentTimeline()
-        if not timeline: return False, "No timeline open."
-        
-        frames_to_grab = []
-        if mode == "Markers":
-            markers = timeline.GetMarkers()
-            for frame_id in markers:
-                frames_to_grab.append(int(frame_id))
-        else: # Center frame
-            start = int(timeline.GetStartFrame())
-            end = int(timeline.GetEndFrame())
-            frames_to_grab.append((start + end) // 2)
-            
-        if not frames_to_grab: return False, "No frames to grab."
-        
-        import os
-        fps = float(timeline.GetSetting("timelineFrameRate") or 30.0)
-        
-        for index, frame in enumerate(frames_to_grab, start=1):
-            tc = frames_to_tc(frame, fps)
-            timeline.SetCurrentTimecode(tc)
-            
-            # Resolve infers format from extension (e.g. .jpg or .png)
-            file_name = f"{timeline.GetName()}_Thumbnail-{index:02d}.jpg"
-            file_path = os.path.join(target_dir, file_name)
-            # Replace backslashes with forward slashes for cross-platform compatibility with Resolve API
-            file_path = file_path.replace("\\", "/")
-            
-            core.project.ExportCurrentFrameAsStill(file_path)
-            
-        return True, f"✓ Exported {len(frames_to_grab)} still frames to chosen directory."
-    except Exception as e:
-        return False, f"Error: {str(e)}"
+        if not core.resolve.OpenPage('color'):
+            return False, 'Open the Color page in Resolve before exporting stills.'
+        Path(target_dir).expanduser().mkdir(parents=True, exist_ok=True)
+        origin, end = int(timeline.GetStartFrame()), int(timeline.GetEndFrame())
+        if end <= origin: return False, "Timeline is empty."
+        frames = [origin+int(frame) for frame in sorted(timeline.GetMarkers() or {})] if mode == 'Markers' else [(origin+end)//2]
+        frames = [frame for frame in frames if origin <= frame < end]
+        if not frames: return False, "No markers inside the timeline."
+        fps = float(timeline.GetSetting('timelineFrameRate') or 30)
+        safe_name = ''.join(c if c.isalnum() or c in ' _-' else '_' for c in timeline.GetName())
+        from time_parser import frames_to_timecode
+        for index, frame in enumerate(frames, 1):
+            tc = frames_to_timecode(frame, fps, ';' in original)
+            if not timeline.SetCurrentTimecode(tc): return False, f"Could not seek to {tc}."
+            path = Path(target_dir).expanduser() / f'{safe_name}_Thumbnail-{index:02d}.jpg'
+            if not core.project.ExportCurrentFrameAsStill(str(path.resolve())):
+                return False, f"Failed to export frame {index}. {index-1} frames saved."
+        return True, f"Exported {len(frames)} still frames to {target_dir}."
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if original: timeline.SetCurrentTimecode(original)
+        if original_page: core.resolve.OpenPage(original_page)
+
 
 def generate_youtube_chapters(core):
     try:
@@ -87,7 +76,7 @@ def generate_youtube_chapters(core):
         
         chapters = []
         for frame_id, marker in sorted(markers.items(), key=lambda x: int(x[0])):
-            rel_frame = int(frame_id) - start_frame
+            rel_frame = int(frame_id)
             rel_sec = max(0, rel_frame / fps)
             
             h = int(rel_sec // 3600)
@@ -134,14 +123,9 @@ def export_csv_data(core, output_path):
     except Exception as e:
         return False, f"Error: {str(e)}"
 
-def frames_to_tc(frames, fps):
-    fps = round(float(fps))
-    if fps == 0: fps = 30
-    h = frames // (fps * 3600)
-    m = (frames % (fps * 3600)) // (fps * 60)
-    s = (frames % (fps * 60)) // fps
-    f = frames % fps
-    return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+def frames_to_tc(frames, fps=30):
+    from time_parser import frames_to_timecode
+    return frames_to_timecode(frames, fps)
 
 def export_shotlist_doc(core, format, output_path, template_path=""):
     import csv
@@ -150,8 +134,11 @@ def export_shotlist_doc(core, format, output_path, template_path=""):
         timeline = core.project.GetCurrentTimeline()
         if not timeline: return False, "No timeline open."
         
+        if not output_path.strip(): return False, "Choose a shotlist output directory or file."
+        if format not in ('csv', 'docx'): return False, "Choose CSV or DOCX format."
+        output_path = os.path.expanduser(output_path)
         ext = os.path.splitext(output_path)[1]
-        if not ext:
+        if os.path.isdir(output_path) or not ext:
             if not os.path.exists(output_path):
                 os.makedirs(output_path, exist_ok=True)
             project_name = core.project.GetName()
@@ -197,9 +184,19 @@ def export_shotlist_doc(core, format, output_path, template_path=""):
             except ImportError:
                 return False, "docxtpl library is not installed. Run 'pip install docxtpl python-docx'."
                 
-            if not os.path.exists(template_path):
+            if not template_path:
+                from docx import Document
+                doc = Document()
+                doc.add_heading(core.project.GetName() + ' — Shotlist', 0)
+                doc.add_paragraph(timeline.GetName())
+                table = doc.add_table(rows=1, cols=5)
+                for cell, title in zip(table.rows[0].cells, ['ID', 'Clip', 'Start', 'End', 'Duration']): cell.text = title
+                for shot in shots:
+                    for cell, value in zip(table.add_row().cells, [shot['serial'], shot['desc'], shot['start_tc'], shot['end_tc'], shot['duration']]): cell.text = str(value)
+                doc.save(output_path)
+                return True, f'Exported Word shotlist to {output_path}'
+            if not os.path.isfile(template_path):
                 return False, f"Template not found at: {template_path}"
-                
             doc = DocxTemplate(template_path)
             context = {
                 "project_name": core.project.GetName(),

@@ -1,0 +1,442 @@
+{
+  "version": 1,
+  "packages": [
+    {
+      "id": "number-counter-pack",
+      "name": "Number Counter Pack",
+      "file": "number-counter-pack/Number Counter Pack.drfx",
+      "sha256": "a9f2f4a55262d8bd9577517df87b4b9c45d8bc1c8b1e6329067506c546e1abae",
+      "bytes": 830360,
+      "categories": [
+        "Titles"
+      ],
+      "template_count": 9,
+      "locations": [
+        "Effects Library → Titles → Number Counter Pack"
+      ],
+      "fonts": [
+        {
+          "family": "Inter",
+          "url": "https://fonts.google.com/specimen/Inter"
+        },
+        {
+          "family": "Open Sans",
+          "url": "https://fonts.google.com/specimen/Open+Sans"
+        }
+      ],
+      "notes": [
+        {
+          "name": "Fonts Links.txt",
+          "path": "notes/Fonts/Fonts Links.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": "number-counter-pack/preview.png",
+      "bundled": true,
+      "min_resolve_version": null
+    },
+    {
+      "id": "animated-text-pack-2-0",
+      "name": "Animated Text Pack 2.0",
+      "file": "animated-text-pack-2-0/Animated Text Pack 2.0.drfx",
+      "sha256": "833bc50f9d9a2cb50ec77f208c5e3e7b9053aef1710ae807b0fc76d045c8d164",
+      "bytes": 1306769,
+      "categories": [
+        "Titles"
+      ],
+      "template_count": 135,
+      "locations": [
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Full Text → 01 Basic Full Text",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Full Text → 02 Fade + Motion Full Text",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Full Text → 03 Bounce Full Text",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Full Text → 04 Flicker Full Text",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Full Text → 05 Blur Full Text",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Letter → 01 Basic Letter",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Letter → 02 Fade + Motion  Letter",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Letter → 03 Bounce Letter",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Letter → 04 Flicker Letter",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Letter → 05 Blur Letter",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Letter → 06 Rotation Letter",
+        "Effects Library → Titles → NeoEdit → 30 FPS Animated Text → Word → 01 Basic Word"
+      ],
+      "fonts": [
+        {
+          "family": "Open Sans",
+          "url": "https://fonts.google.com/specimen/Open+Sans"
+        }
+      ],
+      "notes": [],
+      "dependencies": [],
+      "preview": "animated-text-pack-2-0/preview.png",
+      "bundled": true,
+      "min_resolve_version": 20
+    },
+    {
+      "id": "caption-creator-pack",
+      "name": "Caption Creator Pack",
+      "file": "caption-creator-pack/Caption Creator Pack.drfx",
+      "sha256": "0563123f03be3ac6d907902581b6dc58e0b94100f8000e4cff63fd6acf3eb59c",
+      "bytes": 1672637,
+      "categories": [
+        "Effects",
+        "Titles"
+      ],
+      "template_count": 194,
+      "locations": [
+        "Effects Library → Effects → Caption Creator Pack → Caption Shaders",
+        "Effects Library → Titles → Caption Creator Pack → 01 Minimal → Full Text",
+        "Effects Library → Titles → Caption Creator Pack → 01 Minimal → Letter",
+        "Effects Library → Titles → Caption Creator Pack → 01 Minimal → Word",
+        "Effects Library → Titles → Caption Creator Pack → 02 Shine → Full Text",
+        "Effects Library → Titles → Caption Creator Pack → 02 Shine → Letter",
+        "Effects Library → Titles → Caption Creator Pack → 02 Shine → Word",
+        "Effects Library → Titles → Caption Creator Pack → 03 Glow → Full Text",
+        "Effects Library → Titles → Caption Creator Pack → 03 Glow → Letter",
+        "Effects Library → Titles → Caption Creator Pack → 03 Glow → Word",
+        "Effects Library → Titles → Caption Creator Pack → 04 Stop Motion → Full Text",
+        "Effects Library → Titles → Caption Creator Pack → 04 Stop Motion → Letter"
+      ],
+      "fonts": [
+        {
+          "family": "Inter",
+          "url": "https://fonts.google.com/specimen/Inter"
+        },
+        {
+          "family": "Playfair Display",
+          "url": "https://fonts.google.com/specimen/Playfair+Display"
+        }
+      ],
+      "notes": [],
+      "dependencies": [],
+      "preview": "caption-creator-pack/preview.png",
+      "bundled": true,
+      "min_resolve_version": 20
+    },
+    {
+      "id": "neofx-core-pack",
+      "name": "NeoFX Core Pack",
+      "file": "neofx-core-pack/NeoFX Core Pack.drfx",
+      "sha256": "fd57ffeda25bae9f48dee002eacbc304c56915baadac05626f04b7cbb196ad67",
+      "bytes": 107414,
+      "categories": [
+        "Effects"
+      ],
+      "template_count": 9,
+      "locations": [
+        "Effects Library → Effects → NeoEdit → Effects Core Pack"
+      ],
+      "fonts": [],
+      "notes": [
+        {
+          "name": "2.0 Change Log - Effects Core Pack.txt",
+          "path": "notes/2.0 Change Log - Effects Core Pack.txt"
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "Neo_Chroma.fuse",
+          "path": "dependencies/Fuses/Neo_Chroma.fuse",
+          "sha256": "3bf2e197d61f99a62000fd3ff0b2ffb8ede0293b25952b811d76eb52385b8729"
+        },
+        {
+          "name": "Neo_Glitch.fuse",
+          "path": "dependencies/Fuses/Neo_Glitch.fuse",
+          "sha256": "9f2619ae034bddb986351bfa32f492fdcb144a0adb90b8518c8bebd8d4e2af72"
+        },
+        {
+          "name": "Neo_LensDistort.fuse",
+          "path": "dependencies/Fuses/Neo_LensDistort.fuse",
+          "sha256": "71bd01c27de2ee33d2aca98f3d4ce1ae99148f9160db580ea3f0866d5a421e8f"
+        },
+        {
+          "name": "Neo_LongShadow.fuse",
+          "path": "dependencies/Fuses/Neo_LongShadow.fuse",
+          "sha256": "428294dcf4daa9248be39aa0d451025284693be18d6ccdbcb4bbd283765abab4"
+        },
+        {
+          "name": "Neo_Shatter.fuse",
+          "path": "dependencies/Fuses/Neo_Shatter.fuse",
+          "sha256": "e3f266281d8fcb43c8ee1aa6d6ebb1179fddd1f595a83b2ad1e4cd0655b20132"
+        },
+        {
+          "name": "Neo_Tritone.fuse",
+          "path": "dependencies/Fuses/Neo_Tritone.fuse",
+          "sha256": "d85b9e943e51d20c2b525503f2d9be6415a93315421c222c079d3b51d7a5fda6"
+        }
+      ],
+      "preview": "neofx-core-pack/preview.png",
+      "bundled": true,
+      "min_resolve_version": 20
+    },
+    {
+      "id": "neo-highlighter-pro",
+      "name": "Neo Highlighter Pro",
+      "file": "neo-highlighter-pro/Neo Highlighter Pro.drfx",
+      "sha256": "f197424207c11d1c07739f72819160939e4075b2ce408c6250617749281381e8",
+      "bytes": 12081,
+      "categories": [
+        "Generators"
+      ],
+      "template_count": 1,
+      "locations": [
+        "Effects Library → Generators → NeoEdit → Highlighter Pro"
+      ],
+      "fonts": [],
+      "notes": [
+        {
+          "name": "ReadMe.txt",
+          "path": "notes/ReadMe.txt"
+        },
+        {
+          "name": "V1.02 Change Log.txt",
+          "path": "notes/V1.02 Change Log.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": "neo-highlighter-pro/preview.png",
+      "bundled": true,
+      "min_resolve_version": 20
+    },
+    {
+      "id": "motion-essentials-pack",
+      "name": "Motion Essentials Pack",
+      "file": "motion-essentials-pack/Motion Essentials Pack.drfx",
+      "sha256": "606d68f9a2ab9917c82c4f575241adfd50d640a9f06e8eec3c5d923958c2c907",
+      "bytes": 232792,
+      "categories": [
+        "Effects",
+        "Generators",
+        "Transitions"
+      ],
+      "template_count": 16,
+      "locations": [
+        "Effects Library → Effects → NeoEdit → Motion Essentials Pack → 1. Motion Essential Pack",
+        "Effects Library → Generators → NeoEdit → Motion Essentials Pack → 1. Motion Essential Pack",
+        "Effects Library → Generators → NeoEdit → Motion Essentials Pack → 2. Transition Layers",
+        "Effects Library → Transitions → NeoEdit → Motion Essentials Pack → 1. Motion Essential Pack"
+      ],
+      "fonts": [],
+      "notes": [
+        {
+          "name": "V1.01 Change Log.txt",
+          "path": "notes/V1.01 Change Log.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": "motion-essentials-pack/preview.png",
+      "bundled": true,
+      "min_resolve_version": 20
+    },
+    {
+      "id": "saas-text-animation",
+      "name": "SaaS Text Animation",
+      "file": "saas-text-animation/SaaS Text Animation.drfx",
+      "sha256": "d4ffd7a50ba937615aef523442895c8a29731fe6ec8be4555801690d592e69d8",
+      "bytes": 184851,
+      "categories": [
+        "Titles"
+      ],
+      "template_count": 12,
+      "locations": [
+        "Effects Library → Titles → SaaS Text Animation"
+      ],
+      "fonts": [
+        {
+          "family": "Manrope",
+          "url": "https://www.1001fonts.com/manrope-font.html"
+        }
+      ],
+      "notes": [
+        {
+          "name": "Font Links.txt",
+          "path": "notes/Font/Font Links.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": "saas-text-animation/preview.png",
+      "bundled": true,
+      "min_resolve_version": null
+    },
+    {
+      "id": "trendy-titles",
+      "name": "Trendy Titles",
+      "file": "trendy-titles/Trendy Titles.drfx",
+      "sha256": "fb7cb9058307e3424449d3b7e0673954ead228bbb7c4efe016c53a2b747b7cfe",
+      "bytes": 156433,
+      "categories": [
+        "Titles"
+      ],
+      "template_count": 12,
+      "locations": [
+        "Effects Library → Titles → Trendy Titles"
+      ],
+      "fonts": [
+        {
+          "family": "DM Serif Display",
+          "url": "https://fonts.google.com/specimen/DM+Serif+Display"
+        },
+        {
+          "family": "League Spartan",
+          "url": "https://fonts.google.com/specimen/League+Spartan"
+        }
+      ],
+      "notes": [
+        {
+          "name": "Font Links.txt",
+          "path": "notes/Fonts/Font Links.txt"
+        },
+        {
+          "name": "Video Links.txt",
+          "path": "notes/Videos/Video Links.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": "trendy-titles/preview.png",
+      "bundled": true,
+      "min_resolve_version": null
+    },
+    {
+      "id": "animated-calendar",
+      "name": "Animated-Calendar",
+      "file": "animated-calendar/Animated-Calendar.drfx",
+      "sha256": "a599159390fb814a8be3e33ab5b47ea78e84b228094c40ab5ea58e7d681507bf",
+      "bytes": 1088807,
+      "categories": [
+        "Effects"
+      ],
+      "template_count": 124,
+      "locations": [
+        "Effects Library → Effects → Animated Calendar (LLmotion) → EU-2022",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → EU-2023",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → EU-2024",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → EU-2025",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → US-2022",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → US-2023",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → US-2024",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → US-2025",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → Universal 28 days",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → Universal 29 days",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → Universal 30 days",
+        "Effects Library → Effects → Animated Calendar (LLmotion) → Universal 31 days"
+      ],
+      "fonts": [
+        {
+          "family": "Open Sans",
+          "url": "https://fonts.google.com/specimen/Open+Sans"
+        }
+      ],
+      "notes": [
+        {
+          "name": "font.txt",
+          "path": "notes/Fonts/font.txt"
+        },
+        {
+          "name": "media.txt",
+          "path": "notes/Help/media.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": null,
+      "bundled": true,
+      "min_resolve_version": null
+    },
+    {
+      "id": "finance-infographic-widgets",
+      "name": "Finance-Infographic-Widgets",
+      "file": "finance-infographic-widgets/Finance-Infographic-Widgets.drfx",
+      "sha256": "5e53d3901bcc3052abb567d20a9c059159cb0ebac866675e43cd4da1f5e5a094",
+      "bytes": 584300,
+      "categories": [
+        "Titles"
+      ],
+      "template_count": 6,
+      "locations": [
+        "Effects Library → Titles → Finance Infographic Widgets (LLmotion)"
+      ],
+      "fonts": [
+        {
+          "family": "Inter",
+          "url": "https://fonts.google.com/specimen/Inter"
+        }
+      ],
+      "notes": [
+        {
+          "name": "Font Link.txt",
+          "path": "notes/Fonts/Font Link.txt"
+        },
+        {
+          "name": "Installation.txt",
+          "path": "notes/Help/Installation.txt"
+        },
+        {
+          "name": "Media in Preview.txt",
+          "path": "notes/Help/Media in Preview.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": "finance-infographic-widgets/preview.png",
+      "bundled": true,
+      "min_resolve_version": null
+    },
+    {
+      "id": "text-animation-light",
+      "name": "Text Animation Light",
+      "file": "text-animation-light/Text Animation Light.drfx",
+      "sha256": "25486ef1105e4832230c8a39e9231b722f18ad65e42dc0f1afb3df41cecd8e2d",
+      "bytes": 160203887,
+      "categories": [
+        "Titles"
+      ],
+      "template_count": 9,
+      "locations": [
+        "Effects Library → Titles → Text Animation Light"
+      ],
+      "fonts": [
+        {
+          "family": "Coolvetica",
+          "url": "https://www.dafont.com/coolvetica.font"
+        }
+      ],
+      "notes": [
+        {
+          "name": "Fonts Links.txt",
+          "path": "notes/Help/Fonts Links.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": "text-animation-light/preview.jpg",
+      "bundled": true,
+      "min_resolve_version": null
+    },
+    {
+      "id": "text-elite-presets",
+      "name": "Text Elite Presets",
+      "file": "text-elite-presets/Text Elite Presets.drfx",
+      "sha256": "b56ce70b48506963b6909dcfeb97a470c06491ebb4847e4b9e846fc990ad79ec",
+      "bytes": 43135,
+      "categories": [
+        "Titles"
+      ],
+      "template_count": 20,
+      "locations": [
+        "Effects Library → Titles → Text Elite Presets"
+      ],
+      "fonts": [
+        {
+          "family": "Poppins",
+          "url": "https://fonts.google.com/specimen/Poppins"
+        }
+      ],
+      "notes": [
+        {
+          "name": "Fonts Link.txt",
+          "path": "notes/Fonts/Fonts Link.txt"
+        }
+      ],
+      "dependencies": [],
+      "preview": null,
+      "bundled": true,
+      "min_resolve_version": null
+    }
+  ]
+}

@@ -1,0 +1,393 @@
+--[[--
+Neo Long Shadow Fuse
+GPU-accelerated long shadow effect for DaVinci Resolve / Fusion
+Casts a directional shadow from alpha edges — flat design / material design look
+--]]--
+
+FuRegisterClass("Neo_LongShadow", CT_Tool, {
+    REGS_Name = "Neo Long Shadow",
+    REGS_Category = "Fuses\\Effect",
+    REGS_OpIconString = "NLs",
+    REGS_OpDescription = "GPU-accelerated long shadow effect",
+    REGS_IconID = "Icons.Tools.Icons.Shadow",
+    REG_TimeVariant = false,
+    REG_NoObjMatCtrls = true,
+})
+
+NeoLongShadowParams = [[
+    int imgSize[2];
+    float angle;
+    float length;
+    float shadowCol[3];
+    float opacity;
+    int fadeType;
+    float fadeStrength;
+    int steps;
+    int hasGrad;
+]]
+
+NeoLongShadowSource = [[
+
+#define FADE_NONE   0
+#define FADE_LINEAR 1
+#define FADE_EXP    2
+
+__KERNEL__ void NeoLongShadowKernel(
+    __CONSTANTREF__ NeoLongShadowParams *params,
+    __TEXTURE2D__ inimg,
+    __TEXTURE2D__ gradlut,
+    __TEXTURE2D_WRITE__ outimg)
+{
+    DEFINE_KERNEL_ITERATORS_XY(x, y);
+    if (x < params->imgSize[0] && y < params->imgSize[1])
+    {
+        float width  = (float)params->imgSize[0];
+        float height = (float)params->imgSize[1];
+        float u = ((float)x + 0.5f) / width;
+        float v = ((float)y + 0.5f) / height;
+
+        float4 s = _tex2DVecN(inimg, u, v, 15);
+
+        float angle      = params->angle;
+        float maxLen     = params->length * width;
+        float sR         = params->shadowCol[0];
+        float sG         = params->shadowCol[1];
+        float sB         = params->shadowCol[2];
+        float opacity    = params->opacity;
+        int   fadeType   = params->fadeType;
+        float fadeStr    = params->fadeStrength;
+        int   steps      = params->steps;
+        int   hasGrad    = params->hasGrad;
+
+        float px = (float)x;
+        float py = (float)y;
+
+        float dirX = -_cosf(angle);
+        float dirY = -_sinf(angle);
+
+        float4 result;
+        result.x = s.x;
+        result.y = s.y;
+        result.z = s.z;
+        result.w = s.w;
+
+        if (s.w <= 0.5f) {
+            float hitDist = -1.0f;
+
+            for (int i = 1; i <= steps; i++) {
+                float fi = (float)i;
+                float sx = px + dirX * fi;
+                float sy = py + dirY * fi;
+                float su = (sx + 0.5f) / width;
+                float sv = (sy + 0.5f) / height;
+
+                if (su < 0.0f || su > 1.0f || sv < 0.0f || sv > 1.0f) break;
+
+                float4 samp = _tex2DVecN(inimg, su, sv, 15);
+                if (samp.w > 0.5f) {
+                    hitDist = fi;
+                    break;
+                }
+            }
+
+            if (hitDist >= 0.0f) {
+                float t = hitDist / maxLen;
+                if (t > 1.0f) t = 1.0f;
+
+                float fade = 1.0f;
+                if (fadeType == FADE_LINEAR) fade = 1.0f - t;
+                if (fadeType == FADE_EXP) fade = _expf(-t * fadeStr);
+                if (fade < 0.0f) fade = 0.0f;
+
+                float shadowA = opacity * fade;
+
+                float cR, cG, cB;
+                if (hasGrad == 1) {
+                    float4 gc = _tex2DVecN(gradlut, t, 0.5f, 15);
+                    cR = gc.x;
+                    cG = gc.y;
+                    cB = gc.z;
+                } else {
+                    cR = sR;
+                    cG = sG;
+                    cB = sB;
+                }
+
+                result.x = s.x * s.w + cR * shadowA * (1.0f - s.w);
+                result.y = s.y * s.w + cG * shadowA * (1.0f - s.w);
+                result.z = s.z * s.w + cB * shadowA * (1.0f - s.w);
+                result.w = s.w + shadowA * (1.0f - s.w);
+            }
+        }
+
+        _tex2DVec4Write(outimg, x, y, result);
+    }
+}
+]]
+
+-- ==================== UI ====================
+function Create()
+    InImage = self:AddInput("Image", "Image", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    self:BeginControlNest("Shadow", "Shadow", true)
+
+    InAngle = self:AddInput("Angle", "Angle", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ScrewControl",
+        INP_Default = -35.0,
+        INP_MinScale = -180.0,
+        INP_MaxScale = 180.0,
+    })
+
+    InLength = self:AddInput("Length", "Length", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.15,
+        INP_MinAllowed = 0.01,
+        INP_MaxAllowed = 1.0,
+        INP_MinScale = 0.01,
+        INP_MaxScale = 1.0,
+    })
+
+    InOpacity = self:AddInput("Opacity", "Opacity", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.8,
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 1.0,
+    })
+
+    self:EndControlNest()
+
+    self:BeginControlNest("Color", "Color", true)
+
+    InColorMode = self:AddInput("Mode", "ColorMode", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0,
+        INP_Integer = true,
+        INP_DoNotifyChanged = true,
+        { CCS_AddString = "Single Color" },
+        { CCS_AddString = "Gradient" },
+        CC_LabelPosition = "Horizontal",
+    })
+
+    InShadowR = self:AddInput("Shadow Color", "ShadowR", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 1,
+        IC_ControlID = 0,
+    })
+    InShadowG = self:AddInput("", "ShadowG", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 1,
+        IC_ControlID = 1,
+    })
+    InShadowB = self:AddInput("", "ShadowB", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ColorControl",
+        INP_Default = 0.0,
+        IC_ControlGroup = 1,
+        IC_ControlID = 2,
+    })
+
+    InGradient = self:AddInput("Gradient", "Gradient", {
+        LINKID_DataType = "Gradient",
+        INPID_InputControl = "GradientControl",
+        INP_MinAllowed = -100000.0,
+        INP_MaxAllowed = 100000.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 1.0,
+        IC_Visible = false,
+    })
+
+    self:EndControlNest()
+
+    self:BeginControlNest("Fade", "Fade", true)
+
+    InFadeType = self:AddInput("Fade", "FadeType", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 1,
+        INP_Integer = true,
+        INP_DoNotifyChanged = true,
+        { CCS_AddString = "None" },
+        { CCS_AddString = "Linear" },
+        { CCS_AddString = "Exponential" },
+        CC_LabelPosition = "Horizontal",
+    })
+
+    InFadeStrength = self:AddInput("Fade Strength", "FadeStrength", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinAllowed = 0.1,
+        INP_MaxAllowed = 5.0,
+        INP_MinScale = 0.1,
+        INP_MaxScale = 5.0,
+        IC_Visible = false,
+    })
+
+    self:EndControlNest()
+
+    -- Tutorial page
+    self:AddInput("Tutorial", "TutorialButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 1,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://youtu.be/LvgTmcotl_c"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Tutorial",
+    })
+
+    self:AddInput("Latest Version", "LatestVersionButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://drive.google.com/drive/folders/1T6aAJCU4FxQXYZo-I3GgRDarj0kftmP-?usp=sharing"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Latest Version",
+    })
+
+    self:AddInput("Contact Us", "ContactUsButt", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_Integer = false,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        ICD_Width = 0.5,
+        ICS_ControlPage = "Tutorial",
+        BTNCS_Execute = 'local url = "https://neoeditfx.com/pages/contact"\nlocal osName = package.config:sub(1,1) == "\\\\" and "windows" or "unix"\n\nif osName == "windows" then\n    os.execute(\'start "" "\' .. url .. \'"\')\nelse\n    local uname = io.popen("uname"):read("*l")\n    if uname == "Darwin" then\n        os.execute(\'open "\' .. url .. \'"\')\n    else\n        os.execute(\'xdg-open "\' .. url .. \'"\')\n    end\nend',
+        LINKS_Name = "Contact Us",
+    })
+
+    self:AddInput("Fuse by NeoEdit", "CreatedByNeoEdit", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "LabelControl",
+        INP_Integer = true,
+        INP_MinAllowed = -1000000,
+        INP_MaxAllowed = 1000000,
+        INP_MinScale = 0,
+        INP_MaxScale = 1,
+        INP_Default = 1,
+        INP_External = false,
+        INP_Passive = true,
+        ICS_ControlPage = "Tutorial",
+        LBLC_DropDownButton = false,
+        LBLC_NumInputs = 0,
+        LINKS_Name = "Fuse by NeoEdit",
+    })
+
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+-- ==================== DEFAULT GRADIENT ====================
+function OnAddToFlow()
+    local grad = Gradient()
+    grad:AddRGBA(0.0, 0.0, 0.0, 0.0, 1.0)
+    grad:AddRGBA(1.0, 1.0, 1.0, 1.0, 1.0)
+    InGradient:SetSource(grad, 0)
+end
+
+-- ==================== EVENTS ====================
+function NotifyChanged(inp, param, time)
+    if inp == InFadeType then
+        local fadeType = math.floor(param.Value)
+        InFadeStrength:SetAttrs({ IC_Visible = (fadeType == 2) })
+    end
+    if inp == InColorMode then
+        local mode = math.floor(param.Value)
+        local isSingle = (mode == 0)
+        InShadowR:SetAttrs({ IC_Visible = isSingle })
+        InShadowG:SetAttrs({ IC_Visible = isSingle })
+        InShadowB:SetAttrs({ IC_Visible = isSingle })
+        InGradient:SetAttrs({ IC_Visible = not isSingle })
+    end
+end
+
+-- ==================== PROCESS ====================
+function Process(req)
+    local inimg = InImage:GetValue(req)
+    if not inimg then
+        OutImage:Set(req, nil)
+        return
+    end
+
+    local colorMode = math.floor(InColorMode:GetValue(req).Value)
+    local hasGrad = 0
+
+    -- Build gradient LUT (or 1px dummy)
+    local gradlut
+    if colorMode == 1 then
+        hasGrad = 1
+        local lutSize = 256
+        gradlut = Image({IMG_Width = lutSize, IMG_Height = 1, IMG_Depth = 8})
+        local grad = InGradient:GetValue(req)
+        for i = 0, lutSize - 1 do
+            local t = i / (lutSize - 1)
+            local p = grad:QuickEvaluate(t, "RGB")
+            gradlut:SetPixel(i, 0, p)
+        end
+    else
+        gradlut = Image({IMG_Width = 1, IMG_Height = 1, IMG_Depth = 8})
+        gradlut:Fill(Pixel({R = 0, G = 0, B = 0, A = 1}))
+    end
+
+    local angleRad = InAngle:GetValue(req).Value * math.pi / 180.0
+    local length = InLength:GetValue(req).Value
+    local imgWidth = inimg.DataWindow:Width()
+
+    local maxSteps = math.ceil(length * imgWidth)
+    if maxSteps < 1 then maxSteps = 1 end
+
+    local out = Image({IMG_Like = inimg, IMG_DeferAlloc = true})
+
+    local node = DVIPComputeNode(req, "NeoLongShadowKernel", NeoLongShadowSource, "NeoLongShadowParams", NeoLongShadowParams)
+
+    local params = node:GetParamBlock(NeoLongShadowParams)
+    params.imgSize      = {imgWidth, inimg.DataWindow:Height()}
+    params.angle        = angleRad
+    params.length       = length
+    params.shadowCol    = {InShadowR:GetValue(req).Value, InShadowG:GetValue(req).Value, InShadowB:GetValue(req).Value}
+    params.opacity      = InOpacity:GetValue(req).Value
+    params.fadeType     = math.floor(InFadeType:GetValue(req).Value)
+    params.fadeStrength = InFadeStrength:GetValue(req).Value
+    params.steps        = maxSteps
+    params.hasGrad      = hasGrad
+
+    node:SetParamBlock(params)
+    node:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_TRUE)
+    node:AddInput("inimg", inimg)
+    node:AddInput("gradlut", gradlut)
+    node:AddOutput("outimg", out)
+
+    local ok = node:RunSession(req)
+
+    if not ok then
+        out = Image({IMG_Like = inimg})
+        out:Fill(Pixel({R = 0, G = 0, B = 0, A = 0}))
+    end
+
+    OutImage:Set(req, out)
+end

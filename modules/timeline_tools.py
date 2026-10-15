@@ -6,232 +6,107 @@ def _seconds_to_frames(seconds, fps):
 
 
 def cut_video(core, timecodes_text, reverse_mode=False, target_clip_name=""):
-    """
-    Cut clips within (or outside, in reverse mode) the specified timecode ranges.
+    from modules.ranges import assemble_ranges, normalize_ranges, invert_ranges
+    if not core.project: return False, "Connect to a Resolve project first."
+    timeline = core.project.GetCurrentTimeline()
+    if not timeline: return False, "No active timeline found."
+    fps = float(timeline.GetSetting("timelineFrameRate") or 30)
+    ranges, errors = parse_timecodes(timecodes_text, fps)
+    if errors: return False, "; ".join(errors)
+    if not ranges: return False, "Enter at least one valid time range."
+    duration = timeline.GetEndFrame() - timeline.GetStartFrame()
+    ranges = normalize_ranges([(_seconds_to_frames(a, fps), _seconds_to_frames(b, fps)) for a,b in ranges], duration)
+    if not ranges: return False, "Time ranges are outside this timeline."
+    if target_clip_name:
+        origin = timeline.GetStartFrame()
+        matches = [(item.GetStart()-origin, item.GetEnd()-origin) for item in timeline.GetItemListInTrack("video", 1) or []
+                   if target_clip_name.lower() in item.GetName().lower()]
+        ranges = normalize_ranges([(max(a,c), min(b,d)) for a,b in ranges for c,d in matches if max(a,c)<min(b,d)], duration)
+        if not ranges: return False, "No matching clips overlap these time ranges."
+    keep = ranges if reverse_mode else invert_ranges(ranges, duration)
+    return assemble_ranges(core, timeline, keep, ("Selected - " if reverse_mode else "Cut - ") + timeline.GetName())
 
-    Args:
-        core: ResolveConnection instance
-        timecodes_text: Multi-line string of "start-end" ranges
-        reverse_mode: If True, keep only clips inside the ranges (delete outside)
-        target_clip_name: Optional substring filter to limit cuts to matching clips
-    """
-    try:
-        timeline = core.project.GetCurrentTimeline()
-        if not timeline:
-            return False, "No active timeline found."
 
-        fps_str = timeline.GetSetting("timelineFrameRate") or "30"
-        fps = float(fps_str)
+def _extract_items(core, timeline, items, name):
+    from modules.ranges import assemble_ranges
+    origin = timeline.GetStartFrame()
+    return assemble_ranges(core, timeline, [(i.GetStart()-origin, i.GetEnd()-origin) for i in items], name)
 
-        parsed_ranges, parse_errors = parse_timecodes(timecodes_text, fps)
-        if not parsed_ranges:
-            msg = "Could not parse any valid timecodes."
-            if parse_errors:
-                msg += " Errors: " + "; ".join(parse_errors)
-            return False, msg
-
-        items = timeline.GetItemListInTrack("video", 1)
-        if not items:
-            return False, "No clips found on Video Track 1."
-
-        if target_clip_name:
-            items = [i for i in items if target_clip_name.lower() in i.GetName().lower()]
-            if not items:
-                return False, f"No clip found matching '{target_clip_name}'"
-
-        # Convert range seconds to timeline-relative frames using the timeline's start offset
-        timeline_start = int(timeline.GetStartFrame())
-        frame_ranges = [
-            (
-                timeline_start + _seconds_to_frames(r_start, fps),
-                timeline_start + _seconds_to_frames(r_end, fps),
-            )
-            for (r_start, r_end) in parsed_ranges
-        ]
-
-        clips_to_delete = []
-
-        for item in items:
-            clip_start = item.GetStart()
-            clip_end = item.GetEnd()
-
-            inside_any_range = False
-            for (r_start, r_end) in frame_ranges:
-                # A clip is "inside a range" when it fully sits within [r_start, r_end)
-                if clip_start >= r_start and clip_end <= r_end:
-                    inside_any_range = True
-                    break
-
-            if reverse_mode:
-                # Reverse: keep clips INSIDE ranges, delete everything else
-                if not inside_any_range:
-                    clips_to_delete.append(item)
-            else:
-                # Normal: delete clips inside ranges
-                if inside_any_range:
-                    clips_to_delete.append(item)
-
-        if not clips_to_delete:
-            hint = "outside" if reverse_mode else "inside"
-            return False, f"No clips found {hint} the specified ranges to cut."
-
-        timeline.DeleteClips(clips_to_delete, True)
-        mode_str = "outside" if reverse_mode else "inside"
-        return True, f"Cut {mode_str}: Deleted {len(clips_to_delete)} clips and rippled gaps."
-
-    except Exception as e:
-        return False, f"Error: {str(e)}"
 
 def pick_clips_from_timeline(core, names_text):
-    try:
-        timeline = core.project.GetCurrentTimeline()
-        if not timeline: return False, "No active timeline found."
-        
-        items = timeline.GetItemListInTrack("video", 1)
-        if not items: return False, "No clips found on Video Track 1."
-        
-        search_terms = [t.strip().lower() for t in names_text.split(",") if t.strip()]
-        matched_clips = []
-        
-        for item in items:
-            name = item.GetName().lower()
-            for term in search_terms:
-                if '-' in term:
-                    try:
-                        start_str, end_str = term.split('-')
-                        start_num = int(start_str)
-                        end_num = int(end_str)
+    if not core.project: return False, "Connect to a Resolve project first."
+    timeline = core.project.GetCurrentTimeline()
+    if not timeline: return False, "No active timeline found."
+    import re
+    terms = [term.strip().lower() for term in names_text.split(",") if term.strip()]
+    if not terms: return False, "Enter clip names or number ranges."
+    matched = []
+    for index, item in enumerate(timeline.GetItemListInTrack("video", 1) or [], 1):
+        name = item.GetName().lower()
+        for term in terms:
+            number_range = re.fullmatch(r"(\d+)\s*-\s*(\d+)", term)
+            if number_range:
+                first, last = map(int, number_range.groups())
+                found = first <= index <= last
+            elif term.isdigit(): found = index == int(term)
+            else: found = term in name
+            if found:
+                matched.append(item)
+                break
+    if not matched: return False, "No matching clips found."
+    return _extract_items(core, timeline, matched, "Picked Clips - " + timeline.GetName())
 
-                        import re
-                        nums = re.findall(r'\d+', name)
-                        if nums:
-                            clip_num = int(nums[-1])
-                            if start_num <= clip_num <= end_num:
-                                matched_clips.append(item)
-                                break
-                    except (ValueError, IndexError):
-                        pass
-                else:
-                    if term in name:
-                        matched_clips.append(item)
-                        break
-                        
-        if not matched_clips:
-            return False, "No matching clips found."
-            
-        media_pool_items = []
-        for c in matched_clips:
-            mpi = c.GetMediaPoolItem()
-            if mpi: media_pool_items.append(mpi)
-            
-        if not media_pool_items:
-            return False, "Could not resolve Media Pool items for matches."
-            
-        new_timeline = core.media_pool.CreateEmptyTimeline(f"Picked Clips - {len(media_pool_items)}")
-        if not new_timeline:
-            return False, "Failed to create new timeline."
-            
-        core.project.SetCurrentTimeline(new_timeline)
-        core.media_pool.AppendToTimeline(media_pool_items)
-        
-        return True, f"✓ Successfully extracted {len(media_pool_items)} clips into a new timeline."
-    except Exception as e:
-        return False, f"Error: {str(e)}"
 
 def merge_timelines(core, names_text):
-    try:
-        if not names_text.strip(): return False, "No timeline names provided."
-        
-        names = [n.strip().lower() for n in names_text.split(',')]
-        timelines_to_merge = []
-        
-        count = core.project.GetTimelineCount()
-        for i in range(1, count + 1):
-            t = core.project.GetTimelineByIndex(i)
-            if t.GetName().lower() in names:
-                timelines_to_merge.append(t)
-                
-        if not timelines_to_merge:
-            return False, "None of the specified timelines were found."
-            
-        master = core.media_pool.CreateEmptyTimeline("Master Merged Timeline")
-        core.project.SetCurrentTimeline(master)
-        
-        for t in timelines_to_merge:
-            mpi = t.GetMediaPoolItem()
-            if mpi:
-                core.media_pool.AppendToTimeline([{
-                    "mediaPoolItem": mpi,
-                    "startFrame": 0,
-                    "endFrame": t.GetEndFrame()
-                }])
-                
-        return True, f"✓ Merged {len(timelines_to_merge)} timelines into 'Master Merged Timeline'."
-    except Exception as e:
-        return False, f"Error: {str(e)}"
+    if not core.project: return False, "Connect to a Resolve project first."
+    names = list(dict.fromkeys(n.strip() for n in names_text.split(',') if n.strip()))
+    timelines = {t.GetName(): t for t in [core.project.GetTimelineByIndex(i) for i in range(1, core.project.GetTimelineCount()+1)] if t}
+    if not names or any(n not in timelines for n in names): return False, "Select existing timelines to merge."
+    original = core.project.GetCurrentTimeline()
+    sources = [timelines[n] for n in names]
+    fps = sources[0].GetSetting("timelineFrameRate")
+    if any(t.GetSetting("timelineFrameRate") != fps for t in sources): return False, "Merge requires timelines with the same frame rate."
+    clips = []
+    for t in sources:
+        duration = int(t.GetEndFrame()-t.GetStartFrame())
+        if duration > 0:
+            clips.append({"mediaPoolItem": t.GetMediaPoolItem(), "startFrame": 0, "endFrame": duration})
+    if not clips or any(not c["mediaPoolItem"] for c in clips): return False, "Selected timelines are empty or unavailable."
+    new = core.media_pool.CreateEmptyTimeline(core.unique_timeline_name("Master Merged Timeline"))
+    if not new: return False, "Could not create merged timeline."
+    core.project.SetCurrentTimeline(new)
+    new.SetSetting("useCustomSettings", "1")
+    new.SetSetting("timelineFrameRate", fps)
+    for key in ("timelineResolutionWidth", "timelineResolutionHeight"):
+        new.SetSetting(key, sources[0].GetSetting(key))
+    for info in clips:
+        if not core.media_pool.AppendToTimeline([info]):
+            if original: core.project.SetCurrentTimeline(original)
+            core.media_pool.DeleteTimelines([new])
+            return False, "Could not append a timeline; output removed."
+    return True, f"Merged {len(clips)} timelines in selected order into '{new.GetName()}'."
+
 
 def markers_to_timeline(core, target_color):
-    try:
-        timeline = core.project.GetCurrentTimeline()
-        if not timeline: return False, "No timeline open."
-        
-        markers = timeline.GetMarkers()
-        if not markers: return False, "No markers found."
-        
-        items = timeline.GetItemListInTrack("video", 1)
-        if not items: return False, "No video clips found."
-        
-        marked_clips = []
-        for item in items:
-            start = item.GetStart()
-            end = item.GetEnd()
-            
-            for frame_id, marker_data in markers.items():
-                if target_color == "All" or marker_data['color'] == target_color:
-                    if start <= int(frame_id) <= end:
-                        marked_clips.append(item)
-                        break
-                        
-        if not marked_clips:
-            return False, f"No clips found with {target_color} markers."
-            
-        mp_items = [c.GetMediaPoolItem() for c in marked_clips if c.GetMediaPoolItem()]
-        if not mp_items: return False, "Could not resolve Media Pool items."
-        
-        new_timeline = core.media_pool.CreateEmptyTimeline(f"Extracted {target_color} Markers")
-        core.project.SetCurrentTimeline(new_timeline)
-        core.media_pool.AppendToTimeline(mp_items)
-        
-        return True, f"✓ Extracted {len(mp_items)} marked clips to a new timeline."
-    except Exception as e:
-        return False, f"Error: {str(e)}"
+    if not core.project: return False, "Connect to a Resolve project first."
+    timeline = core.project.GetCurrentTimeline()
+    if not timeline: return False, "No timeline open."
+    markers = timeline.GetMarkers() or {}
+    origin = timeline.GetStartFrame()
+    matched = [item for item in timeline.GetItemListInTrack("video", 1) or []
+               if any((target_color == "All" or data['color'] == target_color)
+                      and item.GetStart() <= origin+int(frame) < item.GetEnd() for frame,data in markers.items())]
+    if not matched: return False, f"No clips found with {target_color} markers."
+    return _extract_items(core, timeline, matched, f"Extracted {target_color} Markers")
+
 
 def filter_by_flag(core, target_color):
-    try:
-        timeline = core.project.GetCurrentTimeline()
-        if not timeline: return False, "No timeline open."
-        
-        items = timeline.GetItemListInTrack("video", 1)
-        if not items: return False, "No video clips found."
-        
-        flagged_clips = []
-        for item in items:
-            flags = item.GetFlagList()
-            if target_color in flags:
-                flagged_clips.append(item)
-                
-        if not flagged_clips:
-            return False, f"No clips found with {target_color} flags."
-            
-        mp_items = [c.GetMediaPoolItem() for c in flagged_clips if c.GetMediaPoolItem()]
-        
-        new_timeline = core.media_pool.CreateEmptyTimeline(f"Extracted {target_color} Flags")
-        core.project.SetCurrentTimeline(new_timeline)
-        core.media_pool.AppendToTimeline(mp_items)
-        
-        return True, f"✓ Extracted {len(mp_items)} flagged clips to a new timeline."
-    except Exception as e:
-        return False, f"Error: {str(e)}"
+    if not core.project: return False, "Connect to a Resolve project first."
+    timeline = core.project.GetCurrentTimeline()
+    if not timeline: return False, "No timeline open."
+    matched = [item for item in timeline.GetItemListInTrack("video", 1) or [] if target_color in (item.GetFlagList() or [])]
+    if not matched: return False, f"No clips found with {target_color} flags."
+    return _extract_items(core, timeline, matched, f"Extracted {target_color} Flags")
 
 def apply_watermark_track(core, image_path):
     import os
@@ -287,7 +162,7 @@ def apply_watermark_track(core, image_path):
                 zoom = 0.170
                 # Scale Pan and Tilt proportionally from the 1920x1080 baseline
                 pan = 725.0 * (w / 1920.0)
-                tilt = 544.0 * (h / 1080.0)
+                tilt = 380.0 * (h / 1080.0)
                 
                 if compound_clip:
                     compound_clip.SetProperty("ZoomX", zoom)
@@ -297,6 +172,8 @@ def apply_watermark_track(core, image_path):
             except Exception:
                 pass
             
-        return True, f"✓ Watermark added and compounded on Track {top_track}."
+        if not all_appended_items or current_record < end_frame:
+            return False, "Watermark could not cover the full timeline. Inspect the new overlay track."
+        return True, f"Watermark added on Track {top_track}."
     except Exception as e:
         return False, f"Error: {str(e)}"

@@ -22,7 +22,7 @@ export function ProcessPage({ isDashboard, favorites, toggleFavorite, loading, c
         isFavorite={favorites.includes('merge_timelines')}
         onToggleFavorite={() => toggleFavorite('merge_timelines')}
         description="Appends the timelines you select into one master timeline, in order."
-        warning="This modifies your timeline directly. Use Timeline Snapshot first if unsure."
+        warning="Creates a new timeline and preserves the source. Review the result before exporting."
         className="md:col-span-2 ring-1 ring-brand-primary/30 shadow-xl shadow-brand-primary/20"
         title="Merge Timelines"
         icon={<Combine size={18} />}
@@ -30,7 +30,7 @@ export function ProcessPage({ isDashboard, favorites, toggleFavorite, loading, c
         helpText="Click to select multiple timelines. They will be copied into a single Master Timeline."
       >
         <div className="flex flex-col gap-4">
-          <div className="flex justify-between items-center text-sm text-white/80">
+          <div className="selection-heading">
             <span>Select Timelines to Merge:</span>
             {context.timelines.length > 0 && (
               <div className="flex gap-3">
@@ -58,17 +58,17 @@ export function ProcessPage({ isDashboard, favorites, toggleFavorite, loading, c
             <div className="text-sm text-white/30 italic p-3 bg-black/20 rounded-xl border border-white/5">No timelines found. Connect to a project first.</div>
           )}
           <div className="flex justify-end mt-2">
-            <div className="w-full md:w-1/3">
+            <div className="tool-action-slot">
               <ActionButton
                 text={selectedMergeTimelines.length > 0 ? `Merge ${selectedMergeTimelines.length} Timelines` : 'Merge Timelines'}
-                category="destructive" variant="primary" requiresConfirm
+                category="destructive" variant="primary"
                 isLoading={loading['merge']}
                 onClick={() => {
                   if (selectedMergeTimelines.length < 1) {
                     addLog('Please select at least one timeline to merge', 'error')
                     return
                   }
-                  runTask('merge_timelines', { timeline_names: selectedMergeTimelines.join(',') }, 'merge')
+                  return runTask('merge_timelines', { timeline_names: selectedMergeTimelines.join(',') }, 'merge')
                 }}
               />
             </div>
@@ -87,11 +87,11 @@ export function ProcessPage({ isDashboard, favorites, toggleFavorite, loading, c
         category="output"
         helpText="Provide the path to an image to place it on a top video track."
       >
-        <div className="flex flex-col md:flex-row gap-4">
+        <div className="tool-settings-layout">
           <div className="flex-1">
             <InputField id="watermarkPath" browseType="file" placeholder="/Users/name/Desktop/logo.png" />
           </div>
-          <div className="w-full md:w-1/3">
+          <div className="tool-action-slot">
             <ActionButton
               text="Apply Watermark"
               category="output" variant="primary"
@@ -108,35 +108,35 @@ export function ProcessPage({ isDashboard, favorites, toggleFavorite, loading, c
         id="auto_jcut__lcut"
         isFavorite={favorites.includes('auto_jcut__lcut')}
         onToggleFavorite={() => toggleFavorite('auto_jcut__lcut')}
-        description="Offsets audio at each cut point to smooth interview edits."
-        warning="This modifies your timeline directly. Use Timeline Snapshot first if unsure."
+        description="Creates an edited copy with overlapping audio on alternating tracks."
+        warning="Creates a new timeline and preserves the source. Review the result before exporting."
         className="md:col-span-2 ring-1 ring-brand-primary/30 shadow-xl shadow-brand-primary/20"
         title="Auto J-Cut / L-Cut"
         icon={<AudioLines size={18} />}
         category="destructive"
-        helpText="Automatically offset audio at every edit point for smoother transitions. J-Cut: next audio starts early. L-Cut: current audio extends."
+        helpText="Requires aligned V1/A1 clips and available source handles. Clip FX and automation need manual review in the copy. J-Cut starts next audio early; L-Cut extends current audio."
       >
-        <div className="flex flex-col md:flex-row gap-5 items-end">
-          <div className="flex-1 w-full flex flex-col md:flex-row gap-4">
-            <div className="w-full md:w-1/2">
+        <div className="tool-settings-layout">
+          <div className="responsive-fields">
+            <div className="min-w-0">
               <SelectField id="jlType" options={['J-Cut (Audio First)', 'L-Cut (Audio Extends)']} />
             </div>
-            <div className="w-full md:w-1/2">
+            <div className="min-w-0">
               <InputField id="jlOverlap" placeholder="Overlap frames (default: 10)" />
             </div>
           </div>
-          <div className="w-full md:w-1/3">
+          <div className="tool-action-slot">
             <ActionButton
               text="Apply Cuts"
               isLoading={loading['jlcut']}
               disabled={!context.current_timeline}
               title={!context.current_timeline ? 'Requires an active timeline' : undefined}
-              category="destructive" variant="primary" requiresConfirm
+              category="destructive" variant="primary"
               onClick={() => {
                 const typeVal = (document.getElementById('jlType') as HTMLSelectElement).value
                 const cutType = typeVal.startsWith('J') ? 'j' : 'l'
                 const overlap = parseInt((document.getElementById('jlOverlap') as HTMLInputElement).value) || 10
-                runTask('jl_cut', { cut_type: cutType, overlap_frames: overlap }, 'jlcut')
+                return runTask('jl_cut', { cut_type: cutType, overlap_frames: overlap }, 'jlcut')
               }}
             />
           </div>
@@ -147,32 +147,32 @@ export function ProcessPage({ isDashboard, favorites, toggleFavorite, loading, c
         id="silence_remover"
         isFavorite={favorites.includes('silence_remover')}
         onToggleFavorite={() => toggleFavorite('silence_remover')}
-        description="Detects dead air on Track 1 and ripple-deletes it automatically."
-        warning="This modifies your timeline directly. Use Timeline Snapshot first if unsure."
+        description="Analyzes timeline audio and creates a new timeline without silence."
+        warning="Creates a new timeline and preserves the source. Review the result before exporting."
         className="md:col-span-2 ring-1 ring-brand-primary/30 shadow-xl shadow-brand-primary/20"
         title="Silence Remover"
         icon={<VolumeX size={18} />}
         category="destructive"
         helpText="Detects silent sections in the audio and creates a new timeline without them. Perfect for jump-cut style content. Requires pydub + ffmpeg."
       >
-        <div className="flex flex-col md:flex-row gap-4">
-          <div className="flex-1 flex gap-3">
+        <div className="tool-settings-layout">
+          <div className="responsive-fields">
             <InputField id="silenceDb" placeholder="Threshold dB (-40)" />
             <InputField id="silenceMin" placeholder="Min silence ms (500)" />
             <InputField id="silencePad" placeholder="Padding ms (100)" />
           </div>
-          <div className="w-full md:w-1/3">
+          <div className="tool-action-slot">
             <ActionButton
               text="Remove Silence"
               isLoading={loading['silence']}
               disabled={!context.current_timeline}
               title={!context.current_timeline ? 'Requires an active timeline' : undefined}
-              category="destructive" variant="primary" requiresConfirm
+              category="destructive" variant="primary"
               onClick={() => {
                 const db = parseInt((document.getElementById('silenceDb') as HTMLInputElement).value) || -40
                 const minMs = parseInt((document.getElementById('silenceMin') as HTMLInputElement).value) || 500
-                const padMs = parseInt((document.getElementById('silencePad') as HTMLInputElement).value) || 100
-                runTask('silence_remove', { threshold_db: db, min_silence_ms: minMs, padding_ms: padMs }, 'silence')
+                const padMs = parseInt((document.getElementById('silencePad') as HTMLInputElement).value || '100')
+                return runTask('silence_remove', { threshold_db: db, min_silence_ms: minMs, padding_ms: padMs }, 'silence')
               }}
             />
           </div>

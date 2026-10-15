@@ -11,7 +11,7 @@ class Config:
     """Application configuration with environment variable support"""
     
     # Base directories
-    BASE_DIR = Path(__file__).parent
+    BASE_DIR = Path(getattr(__import__("sys"), "_MEIPASS", Path(__file__).parent))
     FRONTEND_DIR = BASE_DIR / "frontend" / "dist"
     TEMPLATES_DIR = BASE_DIR / "templates"
     PRESETS_DIR = BASE_DIR / "presets"
@@ -86,7 +86,7 @@ class Config:
         """Check if a path is within allowed directories"""
         try:
             full_path = Path(path).resolve()
-            return any(str(full_path).startswith(str(allowed)) for allowed in cls.get_allowed_paths())
+            return any(full_path.is_relative_to(allowed.resolve()) for allowed in cls.get_allowed_paths())
         except Exception:
             return False
     

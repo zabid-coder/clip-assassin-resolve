@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   Scissors, Target, MapPin, Combine,
   MonitorUp, Video, Camera, PenLine, VolumeX,
@@ -16,23 +16,42 @@ import { ExportPage } from './pages/ExportPage'
 import { TemplatesPage } from './pages/TemplatesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { ManualPage } from './pages/ManualPage'
+import { JobsPage } from './pages/JobsPage'
+import { ConnectionsPage } from './pages/ConnectionsPage'
+import { ToolWorkspace } from './components/workflow/ToolWorkspace'
+import { ReviewDialog } from './components/workflow/ReviewDialog'
+import { api, type Job, type Review } from './api'
 import type {
   AppStatus, AppStats, AppContext, LogEntry, Toast,
   ProjectStatsResponse, BadWordsScanResponse
 } from './types/api'
 
+async function readResponse(res: Response) {
+  const data = await res.json()
+  if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : Array.isArray(data.detail) ? data.detail.map((e: { msg: string }) => e.msg).join('; ') : data.message || `Request failed (${res.status})`)
+  return data
+}
+
 const API_BASE = import.meta.env.DEV ? 'http://localhost:8000/api' : '/api'
 
 const themes = [
-  { name: 'Purple', primary: '#7e5cf5', bg: '#19122a' },
-  { name: 'Rose', primary: '#f43f5e', bg: '#2a1215' },
-  { name: 'Emerald', primary: '#10b981', bg: '#11231a' },
-  { name: 'Cyan', primary: '#06b6d4', bg: '#102126' },
-  { name: 'Amber', primary: '#f59e0b', bg: '#291d09' },
+  { name: 'Purple', primary: '#7e5cf5', bg: '#111318' },
+  { name: 'Rose', primary: '#f43f5e', bg: '#111318' },
+  { name: 'Emerald', primary: '#10b981', bg: '#111318' },
+  { name: 'Cyan', primary: '#06b6d4', bg: '#111318' },
+  { name: 'Amber', primary: '#f59e0b', bg: '#111318' },
 ]
 
 export default function App() {
+  const pollInFlight = useRef(false)
+  const jobsPolling = useRef(false)
+  const seenJobs = useRef<Record<string,string> | null>(null)
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [review, setReview] = useState<Review | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [chapterOutput, setChapterOutput] = useState('')
   const [activeTab, setActiveTab] = useState('dashboard')
+
   const [isCmdPaletteOpen, setIsCmdPaletteOpen] = useState(false)
   const [status, setStatus] = useState<AppStatus>({ connected: false, message: 'Checking connection...' })
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -51,7 +70,7 @@ export default function App() {
     localStorage.getItem('appAnimations') !== 'false'
   )
   const [favorites, setFavorites] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('appFavorites_v2') || '[]') }
+    try { const saved = JSON.parse(localStorage.getItem('appFavorites_v2') || '[]'); return Array.isArray(saved) ? saved.filter((v: unknown) => typeof v === 'string') : [] }
     catch { return [] }
   })
 
@@ -81,7 +100,7 @@ export default function App() {
   const checkStatus = async () => {
     try {
       const res = await fetch(`${API_BASE}/status`)
-      const data = await res.json()
+      const data = await readResponse(res)
       setStatus({ connected: data.success, message: data.message })
     } catch {
       setStatus({ connected: false, message: 'Server unreachable' })
@@ -91,7 +110,7 @@ export default function App() {
   const checkStats = async () => {
     try {
       const res = await fetch(`${API_BASE}/stats`)
-      const data = await res.json()
+      const data = await readResponse(res)
       if (data.success) {
         setStats({ name: data.name, fps: data.fps, clips: data.clips, timecode: data.timecode })
       } else {
@@ -105,42 +124,57 @@ export default function App() {
   const fetchContext = async () => {
     try {
       const res = await fetch(`${API_BASE}/context`)
-      const data = await res.json()
+      const data = await readResponse(res)
       if (data.success) {
         setContext({ project: data.project, timelines: data.timelines, current_timeline: data.current_timeline })
+      } else {
+        setContext({ project: '', timelines: [], current_timeline: '' })
       }
-    } catch { /* ignore */ }
+    } catch { setContext({ project: '', timelines: [], current_timeline: '' }) }
   }
 
   const fetchTemplates = async () => {
     try {
-      const res = await fetch(`${API_BASE}/templates`)
-      const data = await res.json()
+      const res = await fetch(`${API_BASE}/assets`)
+      const data = await readResponse(res)
       if (data.success) setTemplates(data.templates)
     } catch { /* ignore */ }
   }
 
   useEffect(() => {
-    checkStatus()
-    checkStats()
-    fetchContext()
-    fetchTemplates()
-    const statInterval = setInterval(checkStats, 3000)
-    return () => clearInterval(statInterval)
+    const poll = async () => {
+      if (pollInFlight.current) return
+      pollInFlight.current = true
+      try { await Promise.all([checkStatus(), checkStats(), fetchContext()]) }
+      finally { pollInFlight.current = false }
+    }
+    void poll()
+    void fetchTemplates()
+    const timer = setInterval(poll, 8000)
+    return () => clearInterval(timer)
   }, [])
 
   useEffect(() => {
+    setSelectedMergeTimelines(prev => prev.filter(t => context.timelines.includes(t)))
+    setSelectedBatchTimelines(prev => prev.filter(t => context.timelines.includes(t)))
+  }, [context.timelines])
+  useEffect(() => {
+    setBwScan(null)
+    setProjectStats(null)
+  }, [context.project, context.current_timeline])
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'SELECT') return
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'SELECT' || document.activeElement?.tagName === 'TEXTAREA' || (document.activeElement as HTMLElement)?.isContentEditable) return
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault()
         runTask('snapshot', {}, 'snapshot')
       }
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 's') {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault()
         setLoading(prev => ({ ...prev, bw_scan: true }))
         fetch(`${API_BASE}/badwords/scan`)
-          .then(res => res.json())
+          .then(readResponse)
           .then(data => {
             setBwScan(data)
             if (data.success) addLog(`Found ${data.total_markers} markers on '${data.timeline_name}'`, 'success')
@@ -151,7 +185,7 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && ['1', '2', '3', '4', '5', '6'].includes(e.key)) {
         e.preventDefault()
-        const tabs = ['magic', 'cut', 'process', 'export', 'templates', 'help']
+        const tabs = ['magic', 'cut', 'process', 'export', 'templates', 'manual']
         setActiveTab(tabs[parseInt(e.key) - 1])
       }
     }
@@ -174,11 +208,12 @@ export default function App() {
     addLog('Connecting to DaVinci Resolve...', 'info')
     try {
       const res = await fetch(`${API_BASE}/connect`, { method: 'POST' })
-      const data = await res.json()
+      const data = await readResponse(res)
       setStatus({ connected: data.success, message: data.message })
       addLog(data.message, data.success ? 'success' : 'error')
       if (data.success) { checkStats(); fetchContext(); fetchTemplates() }
     } catch {
+      setStatus({ connected: false, message: 'Server unreachable' })
       addLog('Failed to reach Python backend.', 'error')
     }
   }
@@ -191,7 +226,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ timeline_name })
       })
-      const data = await res.json()
+      const data = await readResponse(res)
       addLog(data.message, data.success ? 'success' : 'error')
       if (data.success) { checkStats(); fetchContext() }
     } catch {
@@ -201,72 +236,73 @@ export default function App() {
 
   const runTask = async (endpoint: string, payload: Record<string, unknown> = {}, buttonId: string) => {
     setLoading(prev => ({ ...prev, [buttonId]: true }))
-    addLog('Running task...', 'info')
     try {
-      const res = await fetch(`${API_BASE}/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      const data = await res.json()
-      if (data.success && endpoint === 'youtube_chapters') {
-        try {
-          await navigator.clipboard.writeText(data.message)
-          addLog('Chapters copied to clipboard!', 'success')
-        } catch {
-          addLog('Generated chapters successfully (could not auto-copy)', 'success')
-        }
-      } else {
-        addLog(data.message, data.success ? 'success' : 'error')
+      if (endpoint === 'import_template') {
+        const data = await api(endpoint, payload)
+        addLog(data.message, 'success')
+        return true
       }
-      checkStats()
-      fetchContext()
-    } catch (e: unknown) {
-      addLog(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error')
+      const data = await api<Review>('jobs/preview', { operation: endpoint, payload })
+      setReview(data)
+    } catch (error) {
+      addLog(error instanceof Error ? error.message : 'Could not prepare the operation', 'error')
+      return false
     } finally {
       setLoading(prev => ({ ...prev, [buttonId]: false }))
     }
   }
 
-  const handleCreateMasterFolder = async () => {
-    const parentDir = (document.getElementById('createParentFolderInput') as HTMLInputElement)?.value?.trim()
-    const projName = (document.getElementById('createProjectNameInput') as HTMLInputElement)?.value?.trim()
-    const clientName = (document.getElementById('createClientNameInput') as HTMLInputElement)?.value?.trim() || ''
-    const projType = (document.getElementById('createPresetSelect') as HTMLSelectElement)?.value || 'Standard Video & Film'
-    const customDate = (document.getElementById('createDateInput') as HTMLInputElement)?.value?.trim() || ''
-
-    if (!parentDir || !projName) {
-      addLog('Please specify a Parent Directory and Project Name.', 'error')
-      return
-    }
-    setLoading(prev => ({ ...prev, create_master_folder: true }))
-    addLog('Creating Master Folder structure on disk...', 'info')
+  const submitReview = async () => {
+    if (!review?.ready || submitting) return
+    setSubmitting(true)
     try {
-      const res = await fetch(`${API_BASE}/create_master_folder`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parent_dir: parentDir, project_name: projName, client_name: clientName, project_type: projType, custom_date: customDate })
-      })
-      const data = await res.json()
-      if (data.success) {
-        addLog(data.message, 'success')
-        const masterInputEl = document.getElementById('masterFolderInput') as HTMLInputElement
-        if (masterInputEl && data.folder_path) masterInputEl.value = data.folder_path
-      } else {
-        addLog(data.message || 'Failed to create Master Folder', 'error')
-      }
-    } catch (e: unknown) {
-      addLog(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error')
-    } finally {
-      setLoading(prev => ({ ...prev, create_master_folder: false }))
-    }
+      const data = await api('jobs', { preview_token: review.preview_token })
+      setJobs(previous => [data.job, ...previous.filter(job => job.id !== data.job.id)])
+      if (seenJobs.current) seenJobs.current[data.job.id] = 'queued'
+      setReview(null)
+      addLog('Job queued. Follow progress in Jobs.', 'info')
+    } catch (error) {
+      addLog(error instanceof Error ? error.message : 'Could not queue the job', 'error')
+    } finally { setSubmitting(false) }
   }
+
+  useEffect(() => {
+    const poll = async () => {
+      if (jobsPolling.current) return
+      jobsPolling.current = true
+      try {
+        const data = await api<{ jobs: Job[] }>('jobs')
+        setJobs(data.jobs)
+        if (seenJobs.current) {
+          for (const job of data.jobs) {
+            const previous = seenJobs.current[job.id]
+            if (previous && previous !== job.status && ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.status)) {
+              if (job.operation === 'youtube_chapters' && job.status === 'succeeded') {
+                setChapterOutput(job.message)
+                addLog('Chapters are ready in Export and Jobs.', 'success')
+              } else addLog(job.message, job.status === 'succeeded' ? 'success' : job.status === 'cancelled' ? 'info' : 'error')
+              if (job.operation === 'folder_generate' && job.status === 'succeeded' && job.result?.target) {
+                localStorage.setItem('clipAssassin:masterFolderInput', job.result.target)
+                window.dispatchEvent(new CustomEvent('folder-generated', { detail: job.result.target }))
+              }
+              void checkStats(); void fetchContext()
+            }
+          }
+        }
+        seenJobs.current = Object.fromEntries(data.jobs.map(job => [job.id, job.status]))
+      } catch { /* The connection indicator reports backend availability. */ }
+      finally { jobsPolling.current = false }
+    }
+    void poll()
+    const timer = setInterval(poll, 1500)
+    return () => clearInterval(timer)
+  }, [])
 
   const isDashboard = activeTab === 'dashboard'
   const sharedProps = { isDashboard, favorites, toggleFavorite, loading, context, runTask, addLog }
 
   return (
-    <div className="flex h-screen bg-brand-bg font-sans overflow-hidden text-slate-200">
+    <div data-motion={animationsEnabled?'on':'off'} className="app-shell flex h-screen bg-brand-bg font-sans overflow-hidden text-slate-200">
       {animationsEnabled && (
         <div className="glow-bg">
           <div className="glow-orb-1" />
@@ -274,9 +310,9 @@ export default function App() {
         </div>
       )}
 
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} logs={logs} setLogs={setLogs} />
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} activeJobs={jobs.filter(job=>['queued','running','cancelling'].includes(job.status)).length} />
 
-      <div className="flex-1 flex flex-col relative h-screen overflow-y-auto overflow-x-hidden scroll-smooth">
+      <div className="app-main flex-1 flex flex-col relative h-screen overflow-y-auto overflow-x-hidden scroll-smooth">
         <Header
           status={status}
           handleConnect={handleConnect}
@@ -286,7 +322,13 @@ export default function App() {
           activeTab={activeTab}
         />
 
-        <div className="flex-1 w-full max-w-7xl mx-auto px-6 md:px-12 lg:px-20 pb-48 pt-4">
+        <div className="mobile-navigation md:hidden flex flex-wrap gap-2 px-4 pb-4">
+          {['dashboard', 'master_ingest', 'cut', 'magic', 'process', 'export', 'templates', 'connections', 'jobs', 'settings', 'manual'].map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)} className={`text-xs px-3 py-2 rounded-lg ${activeTab === tab ? 'bg-brand-primary text-white' : 'bg-white/5'}`}>{({dashboard:'Dashboard',master_ingest:'Master Ingest',cut:'Cut & Trim',magic:'Magic Tools',process:'Process',export:'Export',templates:'Templates',connections:'Connections',jobs:'Jobs',settings:'Settings',manual:'Manual'} as Record<string,string>)[tab]}</button>
+          ))}
+        </div>
+        <div className="app-content flex-1 w-full max-w-[1440px] mx-auto px-5 md:px-8 lg:px-10 pb-28 pt-4">
+          <ToolWorkspace key={activeTab} enabled={['master_ingest', 'magic', 'cut', 'process', 'export'].includes(activeTab)} title={({master_ingest:'Master Ingest',magic:'Magic Tools',cut:'Cut & Trim',process:'Process',export:'Export'} as Record<string,string>)[activeTab]||''}>
           {isDashboard && (
             <DashboardPage
               API_BASE={API_BASE}
@@ -303,7 +345,6 @@ export default function App() {
           {(activeTab === 'master_ingest' || isDashboard) && (
             <MasterIngestPage
               {...sharedProps}
-              handleCreateMasterFolder={handleCreateMasterFolder}
             />
           )}
 
@@ -364,14 +405,24 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'jobs' && <JobsPage jobs={jobs} onReview={setReview} addLog={addLog} activity={logs} clearActivity={()=>setLogs([])} />}
+          {activeTab === 'connections' && <ConnectionsPage runTask={runTask} addLog={addLog} />}
           {activeTab === 'manual' && <ManualPage />}
+          {chapterOutput && (activeTab === 'export' || isDashboard) && <div className="mt-6 rounded-xl border border-white/10 bg-black/30 p-5">
+            <div className="flex justify-between"><h3>YouTube Chapters</h3><button onClick={() => setChapterOutput('')}>Close</button></div>
+            <textarea aria-label="Generated YouTube chapters" readOnly value={chapterOutput} rows={8} className="mt-3 w-full bg-black/30 p-3 text-sm font-mono" />
+          </div>}
+
+          </ToolWorkspace>
         </div>
       </div>
+      <ReviewDialog review={review} busy={submitting} onClose={() => setReview(null)} onSubmit={submitReview} />
+      {jobs.some(job => ['running', 'queued', 'cancelling'].includes(job.status)) && <button className="job-indicator" onClick={() => setActiveTab('jobs')}><span className="w-2 h-2 bg-brand-primary rounded-full animate-pulse" />{jobs.filter(job => ['running', 'queued', 'cancelling'].includes(job.status)).length} active jobs · View progress</button>}
 
       <div className="absolute top-24 right-8 z-[100] flex flex-col gap-3 pointer-events-none">
         {toasts.map(t => (
           <div key={t.id} className={`animate-in slide-in-from-right-8 fade-in duration-300 pointer-events-auto flex items-center gap-3 px-5 py-3 rounded-2xl shadow-2xl border backdrop-blur-xl ${
-            t.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+            t.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : t.type === 'info' ? 'bg-sky-500/10 border-sky-500/20 text-sky-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
           }`}>
             <div className={`w-2 h-2 rounded-full ${t.type === 'success' ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]' : 'bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.8)]'}`} />
             <span className="text-sm font-medium">{t.msg}</span>
@@ -385,7 +436,7 @@ export default function App() {
         actions={[
           { id: 'snapshot', title: 'Timeline Snapshot', icon: <Camera size={16} />, keywords: ['backup', 'save'], perform: () => runTask('snapshot', {}, 'snapshot') },
           { id: 'magic_bin_organizer', title: 'Magic Bin Organizer', icon: <FolderTree size={16} />, keywords: ['organize', 'folder'], perform: () => runTask('organize_bins', {}, 'magic_bins') },
-          { id: 'silence_remover', title: 'Silence Remover', icon: <VolumeX size={16} />, keywords: ['cut', 'dead space'], perform: () => runTask('silence_remove', {}, 'silence') },
+          { id: 'silence_remover', title: 'Silence Remover', icon: <VolumeX size={16} />, keywords: ['cut', 'dead space'], perform: () => setActiveTab('process') },
           { id: 'batch_clip_renamer', title: 'Batch Clip Renamer', icon: <PenLine size={16} />, perform: () => setActiveTab('magic') },
           { id: 'social_media_reframe', title: 'Social Media Reframe', icon: <Smartphone size={16} />, perform: () => runTask('social_reframe', { format: '9:16' }, 'magic_reframe_916') },
           { id: 'adjustment_layer', title: 'Quick Adjustment Layer', icon: <Combine size={16} />, keywords: ['fx', 'color', 'grade'], perform: () => runTask('add_adjustment_layer', {}, 'magic_adj') },
@@ -397,13 +448,7 @@ export default function App() {
         ]}
       />
 
-      <div className="absolute bottom-6 right-8 flex items-center gap-3 bg-black/40 backdrop-blur-md border border-white/5 rounded-full py-2 px-4 shadow-xl pointer-events-none hidden md:flex">
-        <img src="/logo.jpg" alt="Clip Assassin Logo" className="w-6 h-6 rounded-md shadow-sm border border-brand-primary/20" />
-        <div className="flex flex-col">
-          <span className="text-[11px] font-bold text-white/80 tracking-wide leading-tight">Clip Assassin</span>
-          <span className="text-[9px] font-semibold text-brand-primary uppercase tracking-widest leading-tight">Version 2.0.1</span>
-        </div>
-      </div>
+
     </div>
   )
 }

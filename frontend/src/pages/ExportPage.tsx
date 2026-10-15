@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { MonitorUp, Image as ImageIcon, Video, FileSpreadsheet } from 'lucide-react'
 import { ActionButton, FeatureCard, InputField, SelectField } from '../components/ui'
 import type { AppContext } from '../types/api'
@@ -17,6 +18,14 @@ interface Props {
 }
 
 export function ExportPage({ API_BASE, isDashboard, favorites, toggleFavorite, loading, context, selectedBatchTimelines, setSelectedBatchTimelines, shotlistFormat, setShotlistFormat, runTask }: Props) {
+  const [renderPresets, setRenderPresets] = useState<string[]>([])
+  const [renderPreset, setRenderPreset] = useState('')
+  useEffect(() => {
+    fetch(`${API_BASE}/render_presets`).then(res => res.json()).then(data => {
+      setRenderPresets(data.presets || [])
+      setRenderPreset(prev => (data.presets || []).includes(prev) ? prev : (data.presets || []).includes('H.264 Master') ? 'H.264 Master' : data.presets?.[0] || '')
+    }).catch(() => setRenderPresets([]))
+  }, [context.project, API_BASE])
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
       <FeatureCard hidden={isDashboard && !favorites.includes('multiplatform_render')}
@@ -31,7 +40,7 @@ export function ExportPage({ API_BASE, isDashboard, favorites, toggleFavorite, l
         helpText="Adds render jobs to the Render Queue for selected timelines using a Resolve Preset."
       >
         <div className="flex flex-col gap-4 mb-4">
-          <div className="flex justify-between items-center text-sm text-white/80">
+          <div className="selection-heading">
             <span>Select Timelines to Render:</span>
             {context.timelines.length > 0 && (
               <div className="flex gap-3">
@@ -60,11 +69,11 @@ export function ExportPage({ API_BASE, isDashboard, favorites, toggleFavorite, l
           )}
         </div>
 
-        <div className="flex flex-col md:flex-row gap-5 items-end">
-          <div className="flex-1 space-y-4">
+        <div className="tool-settings-layout">
+          <div className="tool-settings-fields space-y-4">
             <div>
-              <div className="text-xs text-white/60 mb-1 flex justify-between items-center">
-                <span>Resolve Preset Name:</span>
+              <div className="field-heading">
+                <label htmlFor="renderPresetName">Resolve preset</label>
                 <button
                   onClick={() => fetch(`${API_BASE}/open_folder?path=presets`)}
                   className="text-brand-secondary hover:text-brand-secondary/80 hover:underline"
@@ -72,17 +81,14 @@ export function ExportPage({ API_BASE, isDashboard, favorites, toggleFavorite, l
                   Locate Bundled XML
                 </button>
               </div>
-              <input
-                type="text"
-                id="renderPresetName"
-                defaultValue="ClipAssassin Render_MP4_H.264_with Subtitle"
-                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white/90 focus:outline-none focus:border-brand-primary/50 transition-colors"
-                placeholder="e.g. Custom Export"
-              />
+              <select id="renderPresetName" aria-label="Resolve render preset" value={renderPreset} onChange={e => setRenderPreset(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white/90">
+                <option className="bg-slate-900" value="">Use current Resolve settings</option>
+                {renderPresets.map(name => <option className="bg-slate-900" key={name}>{name}</option>)}
+              </select>
             </div>
             <InputField id="renderDir" browseType="folder" placeholder="Output Directory Path" />
           </div>
-          <div className="w-full md:w-1/3">
+          <div className="tool-action-slot">
             <ActionButton
               text="Add to Render Queue"
               category="render" variant="primary"
@@ -90,7 +96,7 @@ export function ExportPage({ API_BASE, isDashboard, favorites, toggleFavorite, l
               disabled={selectedBatchTimelines.length === 0}
               title={selectedBatchTimelines.length === 0 ? 'Select at least one timeline' : undefined}
               onClick={() => {
-                runTask('batch_render', {
+                return runTask('batch_render', {
                   timelines: selectedBatchTimelines,
                   preset_name: (document.getElementById('renderPresetName') as HTMLInputElement).value,
                   target_dir: (document.getElementById('renderDir') as HTMLInputElement).value
@@ -134,7 +140,7 @@ export function ExportPage({ API_BASE, isDashboard, favorites, toggleFavorite, l
         category="render"
         helpText="Generates a YouTube timestamp list from timeline markers."
       >
-        <div className="w-full md:w-1/3">
+        <div className="tool-action-slot">
           <ActionButton
             text="Generate Chapters"
             category="render" variant="primary"
@@ -156,9 +162,10 @@ export function ExportPage({ API_BASE, isDashboard, favorites, toggleFavorite, l
         helpText="Exports a professional shotlist of Video Track 1. Choose CSV or Word (.docx) template."
       >
         <div className="flex flex-col gap-3">
-          <div className="flex gap-3">
+          <div className="responsive-fields">
             <select
-              className="bg-black/40 border border-white/5 rounded-xl px-4 py-3 text-xs text-white/90 focus:outline-none appearance-none cursor-pointer w-1/3"
+              className="bg-black/40 border border-white/5 rounded-xl px-4 py-3 text-xs text-white/90 focus:outline-none appearance-none cursor-pointer w-full min-w-0"
+              aria-label="Shotlist format"
               value={shotlistFormat}
               onChange={(e) => setShotlistFormat(e.target.value)}
             >
@@ -167,15 +174,15 @@ export function ExportPage({ API_BASE, isDashboard, favorites, toggleFavorite, l
             </select>
 
             <div className="flex-1">
-              <InputField id="shotlistPath" browseType="folder" placeholder="C:\Exports" />
+              <InputField id="shotlistPath" browseType="folder" placeholder="Output directory" />
             </div>
           </div>
 
           {shotlistFormat === 'docx' && (
-            <InputField id="shotlistTemplate" browseType="file" placeholder="C:\Templates\shotlist_template.docx" />
+            <InputField id="shotlistTemplate" browseType="file" placeholder="Word template (.docx)" />
           )}
 
-          <div className="w-full md:w-1/3 mt-2">
+          <div className="tool-action-slot">
             <ActionButton
               text={`Export ${shotlistFormat === 'docx' ? 'Word Document' : 'CSV'}`}
               category="output" variant="primary"

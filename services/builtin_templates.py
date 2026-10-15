@@ -58,7 +58,7 @@ def create_social_media_template() -> IngestTemplate:
                             FolderNode(name="Scripts", type="folder"),
                             FolderNode(name="Storyboards", type="folder"),
                             FolderNode(
-                                name="Shot_List_{content_type}.xlsx",
+                                name="Shot_List_{content_type}.csv",
                                 type="file",
                                 placeholder_content="Shot Number,Description,Duration,Notes\n1,Opening hook,5s,\n2,Main content,30s,\n3,Call to action,5s,"
                             ),
@@ -73,6 +73,7 @@ def create_social_media_template() -> IngestTemplate:
                                 name="Day_{day}",
                                 type="folder",
                                 loop_variable="shoot_days",
+                                loop_index="day",
                                 loop_start=1,
                                 children=[
                                     FolderNode(name="A_Cam", type="folder"),
@@ -230,12 +231,14 @@ def create_commercial_template() -> IngestTemplate:
                                 name="Location_{loc}",
                                 type="folder",
                                 loop_variable="shoot_locations",
+                                loop_index="loc",
                                 loop_start=1,
                                 children=[
                                     FolderNode(
                                         name="Camera_{cam}",
                                         type="folder",
                                         loop_variable="camera_count",
+                                loop_index="cam",
                                         loop_start=1,
                                         children=[
                                             FolderNode(name="A_CAM", type="folder"),
@@ -403,12 +406,14 @@ def create_film_production_template() -> IngestTemplate:
                                 name="Day_{day:02d}",
                                 type="folder",
                                 loop_variable="shooting_days",
+                                loop_index="day",
                                 loop_start=1,
                                 children=[
                                     FolderNode(
                                         name="CamPkg_{pkg}",
                                         type="folder",
                                         loop_variable="camera_packages",
+                                loop_index="pkg",
                                         loop_start=1,
                                         children=[
                                             FolderNode(name="Card_A", type="folder"),
